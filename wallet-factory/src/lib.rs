@@ -8,7 +8,7 @@ mod test;
 
 use soroban_sdk::{
     contract, contractimpl, symbol_short, unwrap::UnwrapOptimized, xdr::ToXdr, Address, BytesN,
-    Env, IntoVal, Map, Symbol, Val, Vec,
+    ContractExecutable, Env, IntoVal, Map, Symbol, Val, Vec,
 };
 use stellar_accounts::smart_account::Signer;
 
@@ -41,7 +41,7 @@ impl WalletFactoryContract {
         let wasm_hash: BytesN<32> = instance.get(&WASM_HASH).unwrap_optimized();
         e.deployer()
             .with_current_contract(salt)
-            .deploy_v2(wasm_hash, (signers, policies))
+            .deploy_contract(ContractExecutable::Wasm(wasm_hash), (signers, policies))
     }
 
     /// Returns the address `deploy` creates for these arguments, whether or

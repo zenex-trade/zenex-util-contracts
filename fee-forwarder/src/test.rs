@@ -165,7 +165,7 @@ impl MockRouter {
 
 /// OpenZeppelin's permissionless fee forwarder example, verbatim in logic:
 /// the recipient is unsigned and any target is called. Built on the pinned
-/// v0.9.0 helper, so its Eager collection consumes the whole approval.
+/// v0.8.0 helper, so its Eager collection consumes the whole approval.
 #[contract]
 struct OzExampleForwarder;
 
@@ -978,7 +978,7 @@ fn a_standalone_approve_cannot_be_spent_through_a_forward() {
 
 #[test]
 fn the_oz_example_forwarder_spends_an_allowance_granted_outside_a_forward() {
-    // Why the refusal still exists on the v0.9.0 helper. OpenZeppelin #873
+    // Why the refusal still exists on the v0.8.0 helper. OpenZeppelin #873
     // (issue #875) makes the Eager collection consume the whole approval, so
     // a forward no longer leaves a leftover behind. The example still calls
     // any target, though, so an allowance a user grants the forwarder
