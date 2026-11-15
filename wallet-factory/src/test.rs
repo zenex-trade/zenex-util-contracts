@@ -5,8 +5,9 @@ use stellar_accounts::smart_account::{ContextRule, Signer};
 
 use crate::{WalletFactoryContract, WalletFactoryContractClient};
 
-/// The canonical smart-account wasm (smart-account-kit, OZ v0.7.1) and the
-/// ed25519 verifier it canonicalizes external keys with.
+/// The smart-account wasm (OpenZeppelin stellar-accounts v0.8.0) and the
+/// ed25519 verifier it canonicalizes external keys with. Their sources are
+/// recorded in `session-policy/testdata/NOTICE.md`.
 const WALLET_WASM: &[u8] = include_bytes!("../../session-policy/testdata/smart_account.wasm");
 const VERIFIER_WASM: &[u8] = include_bytes!("../../session-policy/testdata/ed25519_verifier.wasm");
 
