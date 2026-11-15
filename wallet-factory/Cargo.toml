@@ -1,8 +1,8 @@
 [package]
 name = "wallet-factory"
-version = "0.0.0"
+version = "1.0.0"
 authors = ["Zenith Protocols"]
-license = "AGPL-3.0"
+license = "AGPL-3.0-only"
 edition = "2021"
 publish = false
 
