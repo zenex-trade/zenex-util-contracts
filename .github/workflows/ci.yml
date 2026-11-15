@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # The version the release workflow builds with; the Makefile pins the same.
+  STELLAR_CLI_VERSION: 27.0.0
+
 jobs:
   test:
     name: fmt and test
@@ -22,3 +26,15 @@ jobs:
       # Native tests need no built WASM: the only WASMs they load are the
       # committed testdata in market-router/testdata/ and session-policy/testdata/.
       - run: cargo test --locked --workspace
+      # `make build` shells out to `stellar contract build --optimize`; the
+      # published release binaries ship with the wasm-opt support that flag
+      # needs. Pinned so a CLI release cannot change what CI builds.
+      - name: Install stellar-cli
+        run: |
+          mkdir -p "$HOME/.stellar-cli"
+          curl -fsSL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.stellar-cli"
+          echo "$HOME/.stellar-cli" >> "$GITHUB_PATH"
+          "$HOME/.stellar-cli/stellar" --version
+      # The optimized WASMs, built the way the release workflow builds them.
+      - run: make build

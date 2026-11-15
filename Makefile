@@ -1,9 +1,10 @@
 .PHONY: default test build release fmt clean
 
-# The CLI is pinned to the version zenex-contracts builds with. The
-# `stellar-cli` target checks that the `stellar` on PATH is that version, so a
-# different install fails the build instead of emitting different artifacts.
-STELLAR_CLI_VERSION ?= 27.1.0
+# The CLI is pinned to the version the release workflow builds with
+# (.github/workflows/release.yml), which CI installs too. The `stellar-cli`
+# target checks that the `stellar` on PATH is that version, so a different
+# install fails the build instead of emitting different artifacts.
+STELLAR_CLI_VERSION ?= 27.0.0
 # Exported, not spliced into the recipe, so the value never reaches the shell
 # as text.
 export STELLAR_CLI_VERSION
@@ -25,15 +26,21 @@ test:
 build: stellar-cli
 	stellar contract build --locked --optimize
 
-# Builds the release WASMs into `wasm/` with the checked-out commit embedded as
-# the `source_commit` contract meta. A changed or untracked file could reach the
-# build and make the embedded commit lie, so the target fails unless
-# `git status` is clean. Commit the output in the next commit: a file cannot
-# contain the hash of its own commit.
+# Rebuilds the release WASMs into `wasm/`, which git ignores, the way the
+# release workflow builds them: the same Stellar CLI, the pinned Rust toolchain
+# and the same contract meta. At a release tag the output must equal the
+# published release assets byte for byte. A changed or untracked file could
+# reach the build, so the target fails unless `git status` is clean. The two
+# cargo variables hold the workspace's release profile against a strip or debug
+# setting in a user-level cargo config, which would change every hash.
+RELEASE_REPO ?= github:zenex-trade/zenex-util-contracts
+RELEASE_HOME_DOMAIN ?= app.zenex.trade
 release: stellar-cli
 	@test -z "$$(git status --porcelain)" || { echo "release needs a clean checkout; commit, stash or remove changed and untracked files" >&2; exit 1; }
 	rm -f wasm/*.wasm
-	stellar contract build --locked --optimize --meta source_commit=$$(git rev-parse HEAD) --out-dir wasm
+	CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_DEBUG=0 \
+		stellar contract build --locked --optimize --out-dir wasm \
+		--meta source_repo=$(RELEASE_REPO) --meta home_domain=$(RELEASE_HOME_DOMAIN)
 
 fmt:
 	cargo fmt --all
