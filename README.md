@@ -30,27 +30,38 @@ make test
 make fmt
 ```
 
-The tests need no built WASM. The WASMs they load are checked in:
+The tests need no built WASM. The WASMs they load are checked in, and a `NOTICE.md` next to them
+records each file's source, revision, hash and licence:
 
 - [market-router/testdata/market.wasm](market-router/testdata/market.wasm) is a build of the Zenex
   `market` contract from the [core contracts](https://github.com/zenex-trade/zenex-contracts)
-  (AGPL-3.0-only).
+  (AGPL-3.0-only). See [market-router/testdata/NOTICE.md](market-router/testdata/NOTICE.md).
 - [session-policy/testdata/smart_account.wasm](session-policy/testdata/smart_account.wasm) and
   [session-policy/testdata/ed25519_verifier.wasm](session-policy/testdata/ed25519_verifier.wasm) are
-  the smart account and its ed25519 verifier from
-  [smart-account-kit](https://github.com/kalepail/smart-account-kit)
-  ([Apache-2.0](https://github.com/kalepail/smart-account-kit/blob/main/LICENSE)), which builds on
-  OpenZeppelin's [stellar-contracts](https://github.com/OpenZeppelin/stellar-contracts)
-  ([MIT](https://github.com/OpenZeppelin/stellar-contracts/blob/main/LICENSE)).
+  the smart account and its ed25519 verifier from OpenZeppelin's
+  [stellar-contracts](https://github.com/OpenZeppelin/stellar-contracts)
+  ([MIT](https://github.com/OpenZeppelin/stellar-contracts/blob/main/LICENSE)), in the builds that
+  [smart-account-kit](https://github.com/stellar/smart-account-kit)
+  ([Apache-2.0](https://github.com/stellar/smart-account-kit/blob/main/LICENSE)) deploys. The
+  account is the `stellar-accounts` 0.8.0 build. See
+  [session-policy/testdata/NOTICE.md](session-policy/testdata/NOTICE.md).
 
 ## Dependencies
 
 `fee-forwarder`, `session-policy` and `wallet-factory` use OpenZeppelin's
 [stellar-contracts](https://github.com/OpenZeppelin/stellar-contracts) crates
-`stellar-fee-abstraction` and `stellar-accounts`. They are taken from git at commit
-[`df602b613fbc4ae1e98ff62ba3caef671a370f65`](https://github.com/OpenZeppelin/stellar-contracts/commit/df602b613fbc4ae1e98ff62ba3caef671a370f65),
-not from crates.io. That commit is not a tagged release, and OpenZeppelin has not published it as an
-audited version. `Cargo.toml` states why this revision is used and `Cargo.lock` pins it.
+`stellar-fee-abstraction` and `stellar-accounts`, at the released version
+[0.8.0](https://github.com/OpenZeppelin/stellar-contracts/releases/tag/v0.8.0) from crates.io. All
+five contracts build on soroban-sdk 28.0.0, the version that release builds with. `Cargo.lock` pins
+every dependency.
+
+`stellar-accounts` 0.8.0 contains the fix of the smart-account advisory
+[GHSA-jpg9-m7w4-c7wc](https://github.com/OpenZeppelin/stellar-contracts/security/advisories/GHSA-jpg9-m7w4-c7wc).
+The advisory concerns the account contract, not the code these contracts take from the crate:
+`session-policy` uses the `Policy` trait and the rule and signer types, and `wallet-factory` the
+signer type. A wallet is protected when its own account WASM is a fixed build, so deploy
+`wallet-factory` with the hash of one. The tests run against the 0.8.0 account build
+`c514d35ea67eaea9bfc1fb3327854c0c06111bc1ddebd4fe217c504c1004b9e1`.
 
 ## Releases
 

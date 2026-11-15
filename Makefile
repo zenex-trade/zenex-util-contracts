@@ -3,7 +3,8 @@
 # The CLI is pinned to the version the release workflow builds with
 # (.github/workflows/release.yml), which CI installs too. The `stellar-cli`
 # target checks that the `stellar` on PATH is that version, so a different
-# install fails the build instead of emitting different artifacts.
+# install fails the build instead of emitting different artifacts. soroban-sdk
+# 28 needs Stellar CLI 25.2.0 or newer to build, which 27.0.0 satisfies.
 STELLAR_CLI_VERSION ?= 27.0.0
 # Exported, not spliced into the recipe, so the value never reaches the shell
 # as text.
