@@ -13,7 +13,7 @@ between calls, and none has an admin or an upgrade function.
 | [`market-router`](market-router/README.md) | Batches contract calls into one transaction, all-or-nothing or with a result per call. It also runs the create-and-fill flows, which create an order on a market and fill it in the same transaction. It is stateless and holds nothing. |
 | [`session-policy`](session-policy/README.md) | A policy for an OpenZeppelin smart account that limits a session key to trading. The key may call the configured markets, move the collateral token into them, and pay relay fees through the forwarder to one fixed recipient. Everything else is refused, and the configuration is fixed at deployment. |
 | [`referral`](referral/README.md) | Records that one wallet was referred by another. The referred wallet authorizes the call and the contract emits an event, which is the whole record. There is no storage. |
-| [`wallet-factory`](wallet-factory/README.md) | Deploys smart-account wallets from one WASM fixed at deployment. The address is derived from the wallet's signers and policies, so anyone can deploy a wallet and nobody can deploy a different one at its address. |
+| [`wallet-factory`](wallet-factory/README.md) | Deploys smart-account wallets from one WASM fixed at deployment. The address is derived from the wallet's signers and policies, so anyone can deploy a wallet and nobody can deploy a different one at its address. Each deployment emits an event, so the factory's events list its wallets. |
 
 ## Getting Started
 
