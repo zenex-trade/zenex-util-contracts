@@ -1,5 +1,0 @@
-# The public repository receives each release as a `git archive` of its tag,
-# which leaves out every path marked export-ignore:
-#
-#   git archive --format=tar <tag> | tar -x -C <empty directory>
-/.gitattributes export-ignore
