@@ -74,9 +74,14 @@ and submits the hash to [stellar.expert](https://stellar.expert) for source vali
 release is named `<tag>_<package>_cli27.0.0` and its file `<package>_<tag>.wasm`.
 
 The contracts are built one after another, and a last job submits every hash to stellar.expert
-again, spaced out. If one contract's job fails after it published its release, delete that release
-and its tag (`gh release delete <tag>_<package>_cli27.0.0 --cleanup-tag`) and re-run the job; the
-other contracts are not affected.
+again, spaced out. The order is fee-forwarder, market-router, session-policy, referral,
+wallet-factory. A failed job does not stop the contracts after it.
+
+Re-running a job on GitHub also re-runs every job that depends on it, here every contract later in
+the order and the resubmission. So if one contract's job fails after it published its release,
+delete that release and the release of every later contract, each with its tag
+(`gh release delete <tag>_<package>_cli27.0.0 --cleanup-tag`), then re-run the failed job. The
+contracts earlier in the order are not affected.
 
 Deploy the release files unchanged. Do not deploy a local build: only the release files are attested
 and validated. The network stores contract code under the SHA-256 of its bytes, so a deployed
