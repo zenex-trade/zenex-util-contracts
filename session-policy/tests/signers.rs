@@ -7,8 +7,10 @@
 //! `AuthPayload` with an empty `signers` map, naming the session rule id,
 //! drive the wallet without any key.
 //!
-//! This suite runs the real canonical wallet (smart-account-kit, OZ v0.7.1,
-//! `testdata/smart_account.wasm`, sha256 `1b5f4534…785a`) and ed25519 verifier
+//! This suite runs the real wallet and ed25519 verifier, the builds recorded
+//! in `testdata/NOTICE.md`: the OpenZeppelin stellar-accounts v0.8.0 account
+//! (`testdata/smart_account.wasm`, sha256 `c514d35e…b9e1`), which carries the
+//! fix of advisory GHSA-jpg9-m7w4-c7wc, and the verifier
 //! (`testdata/ed25519_verifier.wasm`, sha256 `60e8798d…b477`, the wasm of the
 //! mainnet verifier `CBOOZV2B…UEMC`). It installs a session rule whose only
 //! signer is a session key and whose policy is this contract, then authorizes
@@ -26,10 +28,12 @@ use soroban_sdk::xdr::{
     WriteXdr as _,
 };
 use soroban_sdk::{
-    contract, contractimpl, vec, Address, Bytes, Env, IntoVal, Map, String, Symbol, TryFromVal,
-    Val, Vec,
+    contract, contractimpl, vec, Address, Bytes, BytesN, Env, IntoVal, Map, String, Symbol,
+    TryFromVal, Val, Vec,
 };
-use stellar_accounts::smart_account::{AuthPayload, ContextRule, ContextRuleType, Signer};
+use stellar_accounts::smart_account::{
+    AuthDigestPreimage, AuthPayload, ContextRule, ContextRuleType, Signer,
+};
 
 const WALLET_WASM: &[u8] = include_bytes!("../testdata/smart_account.wasm");
 const VERIFIER_WASM: &[u8] = include_bytes!("../testdata/ed25519_verifier.wasm");
@@ -157,14 +161,13 @@ fn entry(
     }
 }
 
-/// The session key's signature over `root`, as the wallet verifies it: the
-/// ed25519 signature of `sha256(payload_hash || xdr(context_rule_ids))`.
-fn session_payload(
+/// The host's signature payload for the wallet's entry over `root`.
+fn payload_hash(
     w: &World,
     root: &SorobanAuthorizedInvocation,
     nonce: i64,
     expiration: u32,
-) -> AuthPayload {
+) -> BytesN<32> {
     let e = &w.e;
     let preimage = HashIdPreimage::SorobanAuthorization(HashIdPreimageSorobanAuthorization {
         network_id: Hash(e.ledger().network_id().to_array()),
@@ -172,16 +175,19 @@ fn session_payload(
         signature_expiration_ledger: expiration,
         invocation: root.clone(),
     });
-    let payload_hash = e.crypto().sha256(&Bytes::from_slice(
-        e,
-        &preimage.to_xdr(Limits::none()).unwrap(),
-    ));
-    let rule_ids: Vec<u32> = vec![e, w.session_rule_id];
-    let mut digest = payload_hash.to_bytes().to_bytes();
-    digest.append(&rule_ids.clone().to_xdr(e));
-    let digest = e.crypto().sha256(&digest).to_array();
-    let signature = w.session_key.sign(&digest).to_bytes();
+    e.crypto()
+        .sha256(&Bytes::from_slice(
+            e,
+            &preimage.to_xdr(Limits::none()).unwrap(),
+        ))
+        .to_bytes()
+}
 
+/// An `AuthPayload` for the session rule with the session key's ed25519
+/// signature over `digest`.
+fn signed_payload(w: &World, digest: &BytesN<32>) -> AuthPayload {
+    let e = &w.e;
+    let signature = w.session_key.sign(&digest.to_array()).to_bytes();
     let signer = Signer::External(
         w.verifier.clone(),
         Bytes::from_array(e, &w.session_key.verifying_key().to_bytes()),
@@ -190,8 +196,43 @@ fn session_payload(
     signers.set(signer, Bytes::from_array(e, &signature));
     AuthPayload {
         signers,
-        context_rule_ids: rule_ids,
+        context_rule_ids: vec![e, w.session_rule_id],
     }
+}
+
+/// The session key's signature over `root`, as the wallet verifies it: the
+/// ed25519 signature of the `AuthDigestPreimage` digest, which binds the
+/// wallet's address, the host's payload and the rule ids.
+fn session_payload(
+    w: &World,
+    root: &SorobanAuthorizedInvocation,
+    nonce: i64,
+    expiration: u32,
+) -> AuthPayload {
+    let e = &w.e;
+    let digest = AuthDigestPreimage {
+        account: w.wallet.clone(),
+        signature_payload: payload_hash(w, root, nonce, expiration),
+        context_rule_ids: vec![e, w.session_rule_id],
+    }
+    .digest(e);
+    signed_payload(w, &digest)
+}
+
+/// The same signature over the digest earlier account builds verified,
+/// `sha256(payload_hash || xdr(context_rule_ids))`, which does not bind the
+/// wallet's address.
+fn legacy_session_payload(
+    w: &World,
+    root: &SorobanAuthorizedInvocation,
+    nonce: i64,
+    expiration: u32,
+) -> AuthPayload {
+    let e = &w.e;
+    let rule_ids: Vec<u32> = vec![e, w.session_rule_id];
+    let mut digest = payload_hash(w, root, nonce, expiration).to_bytes();
+    digest.append(&rule_ids.to_xdr(e));
+    signed_payload(w, &e.crypto().sha256(&digest).to_bytes())
 }
 
 /// Calls `market.cancel_order(wallet, id)` and returns the panic message if
@@ -222,6 +263,18 @@ fn signed_session_key_authorizes_a_trade() {
     let payload = session_payload(&w, &root, 1, expiration);
     w.e.set_auths(&[entry(&w, root, payload, 1, expiration)]);
     assert_eq!(cancel(&w, 1), Ok(1));
+}
+
+#[test]
+fn session_key_signature_over_the_legacy_digest_is_rejected() {
+    // The account verifies the `AuthDigestPreimage` digest only. A client that
+    // still signs the earlier digest gets no authorization.
+    let w = setup();
+    let expiration = w.e.ledger().sequence() + 100;
+    let root = cancel_invocation(&w, 1);
+    let payload = legacy_session_payload(&w, &root, 1, expiration);
+    w.e.set_auths(&[entry(&w, root, payload, 1, expiration)]);
+    assert!(cancel(&w, 1).is_err());
 }
 
 #[test]

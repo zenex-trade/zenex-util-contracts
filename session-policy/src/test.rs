@@ -1,7 +1,10 @@
 extern crate std;
 
 use soroban_sdk::{
-    auth::{Context, ContractContext, ContractExecutable, CreateContractHostFnContext},
+    auth::{
+        Context, ContractContext, ContractExecutable, ContractExecutableRef,
+        CreateContractHostFnContext,
+    },
     testutils::{storage::Instance as _, Address as _, MuxedAddress as _},
     vec, Address, Bytes, BytesN, Env, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
 };
@@ -680,6 +683,24 @@ fn test_enforce_blocks_create_contract() {
 
     let context = Context::CreateContractHostFn(CreateContractHostFnContext {
         executable: ContractExecutable::Wasm(BytesN::from_array(&s.e, &[1; 32])),
+        salt: BytesN::from_array(&s.e, &[2; 32]),
+    });
+    s.enforce(&context, &rule);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4002)")]
+fn test_enforce_blocks_create_contract_from_an_external_ref() {
+    // The Protocol 28 executable: a reference another contract owns. The
+    // policy decodes it and refuses it like any other contract creation.
+    let s = Setup::new();
+    let rule = s.install(0);
+
+    let context = Context::CreateContractHostFn(CreateContractHostFnContext {
+        executable: ContractExecutable::ExternalRef(ContractExecutableRef {
+            owner: Address::generate(&s.e),
+            tag: String::from_str(&s.e, "account"),
+        }),
         salt: BytesN::from_array(&s.e, &[2; 32]),
     });
     s.enforce(&context, &rule);

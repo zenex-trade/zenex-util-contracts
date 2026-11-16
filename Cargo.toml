@@ -8,26 +8,21 @@ members = [
   "wallet-factory",
 ]
 
-# Matches the pinned OpenZeppelin commit below: its Cargo.lock resolves
-# soroban-sdk 27.0.6 with the `experimental_spec_shaking_v2` feature, which the
-# OZ crates switch on for the whole graph anyway.
+# The version OpenZeppelin stellar-contracts v0.8.0 builds with. Spec shaking v2
+# is always on from soroban-sdk 28, so no feature is needed for it.
 [workspace.dependencies.soroban-sdk]
-version = "27.0.6"
-features = ["experimental_spec_shaking_v2"]
+version = "28.0.0"
 
-# OpenZeppelin stellar-contracts, UNRELEASED and UNAUDITED: the head of the
-# `v0.9.0` branch. It carries OZ PR #873 (issue #875), whose Eager fee
-# collection consumes the whole approval so no allowance outlives the call. No
-# release contains it yet (latest: v0.7.2, pre-release v0.8.0-rc.3). Move to
-# the crates.io release once v0.9.0 ships. The branch still reports version
-# 0.7.1, so Cargo.lock lists these crates as 0.7.1 at this git rev.
+# OpenZeppelin stellar-contracts v0.8.0, from crates.io. It is the first
+# release line with the fee collection the forwarder relies on (OZ PR #873,
+# issue #875: Eager collection consumes the whole approval, so no allowance
+# outlives the call), and it carries the smart-account fix of advisory
+# GHSA-jpg9-m7w4-c7wc (fixed in 0.7.3 and 0.8.0).
 [workspace.dependencies.stellar-accounts]
-git = "https://github.com/OpenZeppelin/stellar-contracts"
-rev = "df602b613fbc4ae1e98ff62ba3caef671a370f65"
+version = "0.8.0"
 
 [workspace.dependencies.stellar-fee-abstraction]
-git = "https://github.com/OpenZeppelin/stellar-contracts"
-rev = "df602b613fbc4ae1e98ff62ba3caef671a370f65"
+version = "0.8.0"
 
 [profile.release]
 opt-level = "z"

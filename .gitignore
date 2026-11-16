@@ -10,3 +10,6 @@ test_snapshots
 
 .claude/
 CLAUDE.md
+
+# Output of `make release`. The release files are the GitHub release assets.
+/wasm/
