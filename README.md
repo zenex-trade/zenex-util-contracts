@@ -59,8 +59,9 @@ every dependency.
 [GHSA-jpg9-m7w4-c7wc](https://github.com/OpenZeppelin/stellar-contracts/security/advisories/GHSA-jpg9-m7w4-c7wc).
 The advisory concerns the account contract, not the code these contracts take from the crate:
 `session-policy` uses the `Policy` trait and the rule and signer types, and `wallet-factory` the
-signer type. A wallet is protected when its own account WASM is a fixed build, so deploy
-`wallet-factory` with the hash of one. The tests run against the 0.8.0 account build
+signer type. The fix is in the account build, so deploy `wallet-factory` with the hash of a fixed
+one. A wallet that uses delegated signers is protected only when the accounts it delegates to run
+a fixed build too, as the advisory states. The tests run against the 0.8.0 account build
 `c514d35ea67eaea9bfc1fb3327854c0c06111bc1ddebd4fe217c504c1004b9e1`.
 
 ## Releases
@@ -71,6 +72,11 @@ pushed. It builds each contract with stellar.expert's
 27.0.0. For each contract it publishes a GitHub release with the WASM, attests the build provenance,
 and submits the hash to [stellar.expert](https://stellar.expert) for source validation. A contract's
 release is named `<tag>_<package>_cli27.0.0` and its file `<package>_<tag>.wasm`.
+
+The contracts are built one after another, and a last job submits every hash to stellar.expert
+again, spaced out. If one contract's job fails after it published its release, delete that release
+and its tag (`gh release delete <tag>_<package>_cli27.0.0 --cleanup-tag`) and re-run the job; the
+other contracts are not affected.
 
 Deploy the release files unchanged. Do not deploy a local build: only the release files are attested
 and validated. The network stores contract code under the SHA-256 of its bytes, so a deployed
@@ -86,14 +92,14 @@ Fetch the contract's WASM, find the release whose file has the same hash, and re
 tag:
 
 ```
-stellar contract fetch --id <contract_id> --network <network> --out-file deployed.wasm
-stellar contract info meta --wasm deployed.wasm
+stellar contract fetch --id <contract_id> --network <network> --out-file /tmp/deployed.wasm
+stellar contract info meta --wasm /tmp/deployed.wasm
 git checkout <release tag>
 make release
-sha256sum deployed.wasm wasm/*.wasm
+sha256sum /tmp/deployed.wasm wasm/*.wasm
 ```
 
-The meta names the repository the WASM was built in. `deployed.wasm` must have the hash of one of
+The meta names the repository the WASM was built in. `/tmp/deployed.wasm` must have the hash of one of
 the files in `wasm/` and of that contract's release file.
 
 `gh attestation verify <file>.wasm --repo zenex-trade/zenex-util-contracts` checks the provenance of

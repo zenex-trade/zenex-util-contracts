@@ -133,11 +133,3 @@ fn predict_address_emits_nothing() {
     factory.predict_address(&signer(&e, &verifier, 1), &Map::new(&e));
     assert!(e.events().all().events().is_empty());
 }
-
-#[test]
-fn account_wasm_hash_returns_the_constructor_hash() {
-    let e = Env::default();
-    let (factory, _) = setup(&e);
-
-    assert_eq!(factory.account_wasm_hash(), account_wasm_hash(&e));
-}

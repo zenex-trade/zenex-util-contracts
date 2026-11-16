@@ -7,7 +7,6 @@ Constructor: `(account_wasm_hash)`.
 ```
 deploy(signers, policies) -> Address
 predict_address(signers, policies) -> Address
-account_wasm_hash() -> BytesN<32>
 ```
 
 The salt is the SHA-256 of `(signers, policies)` as XDR, so the address commits to the wallet's
@@ -15,8 +14,11 @@ signers and anyone may deploy it. Deploying the same arguments twice fails.
 
 ## No admin
 
-The factory has no owner, no setter and no upgrade function. `account_wasm_hash` returns the hash
-passed to the constructor, and every wallet of the factory runs that build. A new account build
+The factory has no owner, no setter and no upgrade function. Every wallet of the factory is
+deployed with the hash passed to the constructor, which the factory's instance storage and each
+`wallet_deployed` event carry. That hash is the build a wallet starts with: the account contract
+can upgrade itself with its owner's authorization, so read a wallet's current code from the wallet,
+not from the factory. A new account build
 needs a new factory, at a new address. A wallet's address depends on the factory's address, so the
 same signers get a different address from a different factory.
 

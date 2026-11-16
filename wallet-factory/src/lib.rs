@@ -77,10 +77,4 @@ impl WalletFactoryContract {
         let salt = e.crypto().sha256(&args.to_xdr(&e)).to_bytes();
         e.deployer().with_current_contract(salt).deployed_address()
     }
-
-    /// Returns the hash of the smart-account wasm every wallet of this
-    /// factory is deployed with, as passed to the constructor.
-    pub fn account_wasm_hash(e: Env) -> BytesN<32> {
-        e.storage().instance().get(&WASM_HASH).unwrap_optimized()
-    }
 }

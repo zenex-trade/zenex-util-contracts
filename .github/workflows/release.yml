@@ -58,8 +58,16 @@ jobs:
           done
           exit $status
 
+  # The build jobs run one after another, so their submissions to
+  # stellar.expert are spaced. A job that fails does not stop the ones after
+  # it: each runs unless the run is cancelled or the version check failed.
+  # The reusable workflow publishes a contract's release before it submits and
+  # attests it, so a job that failed after publishing cannot simply be re-run.
+  # Delete that contract's release and its tag first
+  # (`gh release delete <tag>_<package>_cli27.0.0 --cleanup-tag`), then re-run
+  # the failed job.
   fee-forwarder:
-    if: github.repository == 'zenex-trade/zenex-util-contracts'
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
     needs: check-version
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -71,8 +79,8 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   market-router:
-    if: github.repository == 'zenex-trade/zenex-util-contracts'
-    needs: fee-forwarder
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    needs: [check-version, fee-forwarder]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
       release_name: ${{ github.ref_name }}
@@ -83,8 +91,8 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   session-policy:
-    if: github.repository == 'zenex-trade/zenex-util-contracts'
-    needs: market-router
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    needs: [check-version, market-router]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
       release_name: ${{ github.ref_name }}
@@ -95,8 +103,8 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   referral:
-    if: github.repository == 'zenex-trade/zenex-util-contracts'
-    needs: session-policy
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    needs: [check-version, session-policy]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
       release_name: ${{ github.ref_name }}
@@ -107,8 +115,8 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   wallet-factory:
-    if: github.repository == 'zenex-trade/zenex-util-contracts'
-    needs: referral
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    needs: [check-version, referral]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
       release_name: ${{ github.ref_name }}
@@ -127,8 +135,8 @@ jobs:
   # Re-running this job alone (re-run failed jobs) keeps the run id and
   # submits again.
   resubmit:
-    if: github.repository == 'zenex-trade/zenex-util-contracts'
-    needs: wallet-factory
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    needs: [check-version, wallet-factory]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
