@@ -72,7 +72,7 @@ fn extend_instance(e: &Env) {
 /// The role that halts a market: moves it to a stricter status.
 const GUARDIAN_ROLE: Symbol = symbol_short!("guardian");
 
-/// Checks that `caller` signed the call and holds the `guardian` role, that
+/// Checks that `caller` authorized the call and holds the `guardian` role, that
 /// the guardian has an owner, and that `status` is a stricter operational
 /// status for the market `target`.
 fn require_halt(e: &Env, caller: &Address, target: &Address, status: u32) {
@@ -125,7 +125,7 @@ impl GuardianContract {
     }
 
     /// Sets the stricter status `status` on the market `target`. `caller`
-    /// must sign and hold the `guardian` role. Fails once the guardian's
+    /// must authorize the call and hold the `guardian` role. Fails once the guardian's
     /// ownership is renounced.
     pub fn set_status(e: Env, caller: Address, target: Address, status: u32) {
         require_halt(&e, &caller, &target, status);

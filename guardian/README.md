@@ -16,7 +16,7 @@ revoke_role(account, role)
 - `forward` is owner only. It calls `fn_name` on `target` with `args` and returns the result. It
   reaches every owner-only function of the contracts the guardian owns, their ownership transfer
   included.
-- `set_status` needs `caller`'s signature and the `guardian` role. It moves the market `target` to a
+- `set_status` needs `caller`'s authorization and the `guardian` role. It moves the market `target` to a
   stricter status: from Active (0) to OnIce (1) or Frozen (2), or from OnIce to Frozen. It reads
   the market's owner. A market the guardian owns gets the status directly. Any other owner is
   assumed to be the governance contract and gets the call.
