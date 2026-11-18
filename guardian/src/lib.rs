@@ -32,6 +32,8 @@ pub enum GuardianError {
     NotOperational = 821,
     /// The role is not `guardian`.
     InvalidRole = 822,
+    /// The guardian has no owner: its ownership was renounced.
+    NoOwner = 823,
 }
 
 /// A role holder set the status of the market `target`.
@@ -57,8 +59,10 @@ pub struct Forwarded {
 /// Ledgers per day, assuming ~5 s per ledger.
 const ONE_DAY_LEDGERS: u32 = 17280;
 
-/// Keeps the instance, which holds the owner, alive for ~61 days from any
-/// call. The roles are persistent entries that OpenZeppelin extends on read.
+/// Extends the instance, which holds the owner, to ~61 days once it has less
+/// than ~60 days left. `forward`, `set_status`, `grant_role` and
+/// `revoke_role` call it, the `Ownable` functions do not. The roles are
+/// persistent entries that OpenZeppelin extends on read.
 fn extend_instance(e: &Env) {
     e.storage()
         .instance()
@@ -68,11 +72,15 @@ fn extend_instance(e: &Env) {
 /// The role that halts a market: moves it to a stricter status.
 const GUARDIAN_ROLE: Symbol = symbol_short!("guardian");
 
-/// Checks that `caller` signed the call and holds the `guardian` role, and
-/// that `status` is a stricter operational status for the market `target`.
+/// Checks that `caller` signed the call and holds the `guardian` role, that
+/// the guardian has an owner, and that `status` is a stricter operational
+/// status for the market `target`.
 fn require_halt(e: &Env, caller: &Address, target: &Address, status: u32) {
     caller.require_auth();
     extend_instance(e);
+    if ownable::get_owner(e).is_none() {
+        panic_with_error!(e, GuardianError::NoOwner);
+    }
     if access_control::has_role(e, caller, &GUARDIAN_ROLE).is_none() {
         panic_with_error!(e, GuardianError::Unauthorized);
     }
@@ -117,7 +125,8 @@ impl GuardianContract {
     }
 
     /// Sets the stricter status `status` on the market `target`. `caller`
-    /// must sign and hold the `guardian` role.
+    /// must sign and hold the `guardian` role. Fails once the guardian's
+    /// ownership is renounced.
     pub fn set_status(e: Env, caller: Address, target: Address, status: u32) {
         require_halt(&e, &caller, &target, status);
 

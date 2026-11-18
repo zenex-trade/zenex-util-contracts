@@ -420,20 +420,83 @@ fn the_role_halts_a_governed_market() {
 #[test]
 fn a_market_owned_by_someone_else_does_not_move() {
     let e = Env::default();
-    e.mock_all_auths();
     let owner = Address::generate(&e);
     let monitor = Address::generate(&e);
     let guardian_id = e.register(GuardianContract, (&owner,));
     let guardian = GuardianClient::new(&e, &guardian_id);
-    guardian.grant_role(&monitor, &guardian_role(&e));
+    let role = guardian_role(&e);
+    guardian
+        .mock_auths(&[MockAuth {
+            address: &owner,
+            invoke: &MockAuthInvoke {
+                contract: &guardian_id,
+                fn_name: "grant_role",
+                args: (&monitor, &role).into_val(&e),
+                sub_invokes: &[],
+            },
+        }])
+        .grant_role(&monitor, &role);
 
-    // A governance contract the guardian does not own rejects the guardian.
+    // A governance contract the guardian does not own rejects the call, with
+    // the monitor's valid signature.
     let foreign_governance = e.register(governance::WASM, (&owner, DELAY));
     let market_id = e.register(MockMarket, (&foreign_governance,));
+    let market = MockMarketClient::new(&e, &market_id);
+    let monitor_auth = MockAuth {
+        address: &monitor,
+        invoke: &MockAuthInvoke {
+            contract: &guardian_id,
+            fn_name: "set_status",
+            args: (&monitor, &market_id, FROZEN).into_val(&e),
+            sub_invokes: &[],
+        },
+    };
     assert!(guardian
+        .mock_auths(core::slice::from_ref(&monitor_auth))
         .try_set_status(&monitor, &market_id, &FROZEN)
         .is_err());
-    assert_eq!(MockMarketClient::new(&e, &market_id).get_status(), ACTIVE);
+    assert_eq!(market.get_status(), ACTIVE);
+
+    // The one thing missing was the authorization of that governance's
+    // owner: with it the same call passes.
+    let owner_auth = MockAuth {
+        address: &owner,
+        invoke: &MockAuthInvoke {
+            contract: &foreign_governance,
+            fn_name: "set_status",
+            args: (&market_id, FROZEN).into_val(&e),
+            sub_invokes: &[],
+        },
+    };
+    guardian
+        .mock_auths(&[monitor_auth, owner_auth])
+        .set_status(&monitor, &market_id, &FROZEN);
+    assert_eq!(market.get_status(), FROZEN);
+}
+
+#[test]
+fn a_renounced_guardian_sets_no_status() {
+    let s = setup();
+    let monitor = grant_monitor(&s);
+    s.guardian.renounce_ownership();
+    assert_eq!(s.guardian.get_owner(), None);
+
+    assert_eq!(
+        s.guardian
+            .try_set_status(&monitor, &s.market.address, &FROZEN),
+        Err(guardian_error(GuardianError::NoOwner))
+    );
+    assert_eq!(s.market.get_status(), ACTIVE);
+    // Nothing else works either.
+    let args: Vec<Val> = Vec::from_array(&s.e, [FROZEN.into_val(&s.e)]);
+    assert!(s
+        .guardian
+        .try_forward(&s.market.address, &Symbol::new(&s.e, "set_status"), &args)
+        .is_err());
+    assert!(s
+        .guardian
+        .try_grant_role(&monitor, &guardian_role(&s.e))
+        .is_err());
 }
 
 #[test]

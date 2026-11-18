@@ -21,6 +21,7 @@ revoke_role(account, role)
   the market's owner. A market the guardian owns gets the status directly. Any other owner is
   assumed to be the governance contract and gets the call.
 - `grant_role` and `revoke_role` are owner only. `guardian` is the only role.
+- After `renounce_ownership` every function above fails, `set_status` included.
 
 Resuming, delisting and retiring a market stay with the owner, through `forward`.
 
@@ -42,3 +43,4 @@ Role and ownership changes emit OpenZeppelin's events.
 | 820 | The status is not operational, or not stricter than the current one |
 | 821 | The market is Delisted or Retired |
 | 822 | The role is not `guardian` |
+| 823 | The guardian has no owner |
