@@ -14,13 +14,15 @@
 //! (`testdata/ed25519_verifier.wasm`, sha256 `60e8798d…b477`, the wasm of the
 //! mainnet verifier `CBOOZV2B…UEMC`). It installs a session rule whose only
 //! signer is a session key and whose policy is this contract, then authorizes
-//! a market call with and without the key's signature.
+//! a market call with and without the key's signature. It also moves a real
+//! token through the wallet to check the spend limit end to end.
 
 extern crate std;
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use session_policy::SessionPolicyContract;
-use soroban_sdk::testutils::Address as _;
+use session_policy::{SessionPolicyContract, SessionPolicyContractClient, SpendLimit};
+use soroban_sdk::testutils::{Address as _, Ledger as _};
+use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::{
     Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs, Limits,
     ScAddress, ScSymbol, ScVal, SorobanAddressCredentials, SorobanAuthorizationEntry,
@@ -49,13 +51,26 @@ impl MockMarket {
         user.require_auth();
         id
     }
+
+    /// Pulls `amount` of `token` from `user` into the market, as the real
+    /// market escrows collateral.
+    pub fn deposit(e: Env, user: Address, token: Address, amount: i128) {
+        user.require_auth();
+        TokenClient::new(&e, &token).transfer(&user, e.current_contract_address(), &amount);
+    }
 }
+
+/// The session's spend limit: 100 tokens per period of 1,000 ledgers.
+const LIMIT: i128 = 100 * 10_000_000;
+const PERIOD: u32 = 1_000;
 
 struct World {
     e: Env,
     wallet: Address,
     verifier: Address,
     market: Address,
+    token: Address,
+    policy: Address,
     session_key: SigningKey,
     session_rule_id: u32,
 }
@@ -71,12 +86,15 @@ fn setup() -> World {
     let wallet = e.register(WALLET_WASM, (owner_signers, Map::<Address, Val>::new(&e)));
 
     let market = e.register(MockMarket, ());
+    let token = e
+        .register_stellar_asset_contract_v2(Address::generate(&e))
+        .address();
     let policy = e.register(
         SessionPolicyContract,
         (
             Address::generate(&e),
             vec![&e, market.clone()],
-            Address::generate(&e),
+            token.clone(),
             Address::generate(&e),
         ),
     );
@@ -87,11 +105,17 @@ fn setup() -> World {
         Bytes::from_array(&e, &session_key.verifying_key().to_bytes()),
     );
     let mut policies: Map<Address, Val> = Map::new(&e);
-    policies.set(policy, ().into_val(&e));
+    let limit = SpendLimit {
+        limit: LIMIT,
+        period_ledgers: PERIOD,
+    };
+    policies.set(policy.clone(), limit.into_val(&e));
     let valid_until: Option<u32> = Some(e.ledger().sequence() + 100_000);
 
-    // The owner adds the session rule; only this call is mocked.
+    // The owner adds the session rule and the wallet gets 1,000 tokens; only
+    // these calls are mocked.
     e.mock_all_auths();
+    StellarAssetClient::new(&e, &token).mint(&wallet, &(10 * LIMIT));
     let rule: ContextRule = e.invoke_contract(
         &wallet,
         &Symbol::new(&e, "add_context_rule"),
@@ -111,6 +135,8 @@ fn setup() -> World {
         wallet,
         verifier,
         market,
+        token,
+        policy,
         session_key,
         session_rule_id: rule.id,
     }
@@ -138,6 +164,49 @@ fn cancel_invocation(w: &World, id: u32) -> SorobanAuthorizedInvocation {
         }),
         sub_invocations: std::vec::Vec::new().try_into().unwrap(),
     }
+}
+
+/// The authorized invocation `market.deposit(wallet, token, amount)` with the
+/// `token.transfer(wallet, market, amount)` it makes.
+fn deposit_invocation(w: &World, amount: i128) -> SorobanAuthorizedInvocation {
+    let e = &w.e;
+    let scvals = |vals: &[Val]| -> std::vec::Vec<ScVal> {
+        vals.iter()
+            .map(|v| ScVal::try_from_val(e, v).unwrap())
+            .collect()
+    };
+    let transfer = SorobanAuthorizedInvocation {
+        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+            contract_address: sc_address(e, &w.token),
+            function_name: ScSymbol("transfer".try_into().unwrap()),
+            args: scvals(&[w.wallet.to_val(), w.market.to_val(), amount.into_val(e)])
+                .try_into()
+                .unwrap(),
+        }),
+        sub_invocations: std::vec::Vec::new().try_into().unwrap(),
+    };
+    SorobanAuthorizedInvocation {
+        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+            contract_address: sc_address(e, &w.market),
+            function_name: ScSymbol("deposit".try_into().unwrap()),
+            args: scvals(&[w.wallet.to_val(), w.token.to_val(), amount.into_val(e)])
+                .try_into()
+                .unwrap(),
+        }),
+        sub_invocations: std::vec![transfer].try_into().unwrap(),
+    }
+}
+
+/// Deposits `amount` signed by the session key, and returns whether the
+/// wallet authorized it.
+fn deposit(w: &World, amount: i128, nonce: i64) -> bool {
+    let expiration = w.e.ledger().sequence() + 100;
+    let root = deposit_invocation(w, amount);
+    // Two contexts: the deposit and the transfer it makes.
+    let payload = session_payload_for(w, &root, nonce, expiration, 2);
+    w.e.set_auths(&[entry(w, root, payload, nonce, expiration)]);
+    let client = MockMarketClient::new(&w.e, &w.market);
+    client.try_deposit(&w.wallet, &w.token, &amount).is_ok()
 }
 
 /// The wallet's authorization entry over `root`, carrying `payload`.
@@ -183,9 +252,9 @@ fn payload_hash(
         .to_bytes()
 }
 
-/// An `AuthPayload` for the session rule with the session key's ed25519
-/// signature over `digest`.
-fn signed_payload(w: &World, digest: &BytesN<32>) -> AuthPayload {
+/// An `AuthPayload` naming `rule_ids`, one per context, with the session
+/// key's ed25519 signature over `digest`.
+fn signed_payload(w: &World, digest: &BytesN<32>, rule_ids: Vec<u32>) -> AuthPayload {
     let e = &w.e;
     let signature = w.session_key.sign(&digest.to_array()).to_bytes();
     let signer = Signer::External(
@@ -196,7 +265,7 @@ fn signed_payload(w: &World, digest: &BytesN<32>) -> AuthPayload {
     signers.set(signer, Bytes::from_array(e, &signature));
     AuthPayload {
         signers,
-        context_rule_ids: vec![e, w.session_rule_id],
+        context_rule_ids: rule_ids,
     }
 }
 
@@ -209,14 +278,30 @@ fn session_payload(
     nonce: i64,
     expiration: u32,
 ) -> AuthPayload {
+    session_payload_for(w, root, nonce, expiration, 1)
+}
+
+/// `session_payload` for a `root` of `contexts` invocations: the payload
+/// names the session rule once per context.
+fn session_payload_for(
+    w: &World,
+    root: &SorobanAuthorizedInvocation,
+    nonce: i64,
+    expiration: u32,
+    contexts: u32,
+) -> AuthPayload {
     let e = &w.e;
+    let mut rule_ids: Vec<u32> = Vec::new(e);
+    for _ in 0..contexts {
+        rule_ids.push_back(w.session_rule_id);
+    }
     let digest = AuthDigestPreimage {
         account: w.wallet.clone(),
         signature_payload: payload_hash(w, root, nonce, expiration),
-        context_rule_ids: vec![e, w.session_rule_id],
+        context_rule_ids: rule_ids.clone(),
     }
     .digest(e);
-    signed_payload(w, &digest)
+    signed_payload(w, &digest, rule_ids)
 }
 
 /// The same signature over the digest earlier account builds verified,
@@ -231,8 +316,8 @@ fn legacy_session_payload(
     let e = &w.e;
     let rule_ids: Vec<u32> = vec![e, w.session_rule_id];
     let mut digest = payload_hash(w, root, nonce, expiration).to_bytes();
-    digest.append(&rule_ids.to_xdr(e));
-    signed_payload(w, &e.crypto().sha256(&digest).to_bytes())
+    digest.append(&rule_ids.clone().to_xdr(e));
+    signed_payload(w, &e.crypto().sha256(&digest).to_bytes(), rule_ids)
 }
 
 /// Calls `market.cancel_order(wallet, id)` and returns the panic message if
@@ -314,4 +399,30 @@ fn empty_signature_on_the_session_rule_is_rejected_by_the_policy() {
         error.contains("Error(Contract, #4007)"),
         "expected the policy's SignerNotAuthenticated (4007), got: {error}"
     );
+}
+
+#[test]
+fn session_key_spends_up_to_the_limit_per_period() {
+    let w = setup();
+    let token = TokenClient::new(&w.e, &w.token);
+    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
+    let unit = LIMIT / 100;
+
+    // 60 of the 100 pass, another 60 would make 120.
+    assert!(deposit(&w, 60 * unit, 1));
+    assert!(!deposit(&w, 60 * unit, 2));
+    assert_eq!(token.balance(&w.market), 60 * unit);
+    // The refused deposit left the count alone, and 40 still fit.
+    assert!(deposit(&w, 40 * unit, 3));
+    assert!(!deposit(&w, 1, 4));
+    assert_eq!(token.balance(&w.market), LIMIT);
+    let spend = policy.get_spend(&w.wallet, &w.session_rule_id).unwrap();
+    assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
+
+    // One ledger before the period ends the limit still holds.
+    w.e.ledger().with_mut(|l| l.sequence_number += PERIOD - 1);
+    assert!(!deposit(&w, 1, 5));
+    w.e.ledger().with_mut(|l| l.sequence_number += 1);
+    assert!(deposit(&w, LIMIT, 6));
+    assert_eq!(token.balance(&w.market), 2 * LIMIT);
 }
