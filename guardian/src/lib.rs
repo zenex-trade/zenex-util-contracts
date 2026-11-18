@@ -28,12 +28,10 @@ pub enum GuardianError {
     Unauthorized = 1,
     /// The status is not operational, or not stricter than the current one.
     InvalidStatus = 820,
-    /// The target is Delisted or Retired. Only the owner moves it from there.
-    NotOperational = 821,
     /// The role is not `guardian`.
-    InvalidRole = 822,
+    InvalidRole = 821,
     /// The guardian has no owner: its ownership was renounced.
-    NoOwner = 823,
+    NoOwner = 822,
 }
 
 /// A role holder set the status of the market `target`.
@@ -42,7 +40,7 @@ pub enum GuardianError {
 pub struct StatusSet {
     #[topic]
     pub target: Address,
-    /// The market `Status` discriminant now in force.
+    /// The status the market was set to: 1 (OnIce) or 2 (Frozen).
     pub status: u32,
     pub caller: Address,
 }
@@ -59,10 +57,7 @@ pub struct Forwarded {
 /// Ledgers per day, assuming ~5 s per ledger.
 const ONE_DAY_LEDGERS: u32 = 17280;
 
-/// Extends the instance, which holds the owner, to ~61 days once it has less
-/// than ~60 days left. `forward`, `set_status`, `grant_role` and
-/// `revoke_role` call it, the `Ownable` functions do not. The roles are
-/// persistent entries that OpenZeppelin extends on read.
+/// Extends the instance to ~61 days once it has less than ~60 days left.
 fn extend_instance(e: &Env) {
     e.storage()
         .instance()
@@ -77,7 +72,6 @@ const GUARDIAN_ROLE: Symbol = symbol_short!("guardian");
 /// status for the market `target`.
 fn require_halt(e: &Env, caller: &Address, target: &Address, status: u32) {
     caller.require_auth();
-    extend_instance(e);
     if ownable::get_owner(e).is_none() {
         panic_with_error!(e, GuardianError::NoOwner);
     }
@@ -85,21 +79,10 @@ fn require_halt(e: &Env, caller: &Address, target: &Address, status: u32) {
         panic_with_error!(e, GuardianError::Unauthorized);
     }
     let current: u32 = e.invoke_contract(target, &Symbol::new(e, "get_status"), Vec::new(e));
-    if status > 2 {
+    // A Delisted (3) or Retired market fails here too: every status up to
+    // Frozen (2) is at or below its current one.
+    if status > 2 || status <= current {
         panic_with_error!(e, GuardianError::InvalidStatus);
-    }
-    if current > 2 {
-        panic_with_error!(e, GuardianError::NotOperational);
-    }
-    if status <= current {
-        panic_with_error!(e, GuardianError::InvalidStatus);
-    }
-}
-
-/// Fails with `InvalidRole` unless `role` is `guardian`.
-fn require_known_role(e: &Env, role: &Symbol) {
-    if *role != GUARDIAN_ROLE {
-        panic_with_error!(e, GuardianError::InvalidRole);
     }
 }
 
@@ -128,6 +111,7 @@ impl GuardianContract {
     /// must authorize the call and hold the `guardian` role. Fails once the guardian's
     /// ownership is renounced.
     pub fn set_status(e: Env, caller: Address, target: Address, status: u32) {
+        extend_instance(&e);
         require_halt(&e, &caller, &target, status);
 
         // A market this guardian owns gets the status directly. Any other
@@ -156,24 +140,19 @@ impl GuardianContract {
     /// Owner only. Grants `account` the role `guardian`. A no-op if it
     /// holds the role already. Publishes OpenZeppelin's `role_granted`.
     pub fn grant_role(e: Env, account: Address, role: Symbol) {
-        // The check `#[only_owner]` expands to, called directly because it
-        // returns the owner, which OpenZeppelin's role event names as the
-        // granter. The attribute would need a second read for that.
-        let owner = ownable::enforce_owner_auth(&e);
         extend_instance(&e);
-        require_known_role(&e, &role);
+        let owner = ownable::enforce_owner_auth(&e);
+        if role != GUARDIAN_ROLE {
+            panic_with_error!(&e, GuardianError::InvalidRole);
+        }
         access_control::grant_role_no_auth(&e, &account, &role, &owner);
     }
 
     /// Owner only. Revokes `role` from `account`, and fails if the account
     /// does not hold it. Publishes OpenZeppelin's `role_revoked`.
     pub fn revoke_role(e: Env, account: Address, role: Symbol) {
-        // The check `#[only_owner]` expands to, called directly because it
-        // returns the owner, which OpenZeppelin's role event names as the
-        // revoker. The attribute would need a second read for that.
-        let owner = ownable::enforce_owner_auth(&e);
         extend_instance(&e);
-        require_known_role(&e, &role);
+        let owner = ownable::enforce_owner_auth(&e);
         access_control::revoke_role_no_auth(&e, &account, &role, &owner);
     }
 }

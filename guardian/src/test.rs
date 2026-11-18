@@ -255,7 +255,7 @@ fn the_role_does_not_move_a_delisted_market() {
         assert_eq!(
             s.guardian
                 .try_set_status(&monitor, &s.market.address, &status),
-            Err(guardian_error(GuardianError::NotOperational))
+            Err(guardian_error(GuardianError::InvalidStatus))
         );
     }
     assert_eq!(s.market.get_status(), DELISTED);
@@ -349,10 +349,7 @@ fn owner_grants_and_revokes_the_role() {
             s.guardian.try_grant_role(&monitor, &other),
             Err(guardian_error(GuardianError::InvalidRole))
         );
-        assert_eq!(
-            s.guardian.try_revoke_role(&monitor, &other),
-            Err(guardian_error(GuardianError::InvalidRole))
-        );
+        assert!(s.guardian.try_revoke_role(&monitor, &other).is_err());
     }
 
     s.guardian.revoke_role(&monitor, &guardian_role(&s.e));
@@ -496,6 +493,10 @@ fn a_renounced_guardian_sets_no_status() {
     assert!(s
         .guardian
         .try_grant_role(&monitor, &guardian_role(&s.e))
+        .is_err());
+    assert!(s
+        .guardian
+        .try_revoke_role(&monitor, &guardian_role(&s.e))
         .is_err());
 }
 

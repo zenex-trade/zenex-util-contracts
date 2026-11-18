@@ -41,6 +41,5 @@ Role and ownership changes emit OpenZeppelin's events.
 |---|---|
 | 1 | `caller` does not hold the `guardian` role |
 | 820 | The status is not operational, or not stricter than the current one |
-| 821 | The market is Delisted or Retired |
-| 822 | The role is not `guardian` |
-| 823 | The guardian has no owner |
+| 821 | The role is not `guardian` |
+| 822 | The guardian has no owner |
