@@ -20,8 +20,8 @@
 extern crate std;
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use session_policy::{SessionPolicyContract, SessionPolicyContractClient, SpendLimit};
-use soroban_sdk::testutils::{Address as _, Ledger as _};
+use session_policy::{SessionPolicyContract, SessionPolicyContractClient};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::{
     Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs, Limits,
@@ -60,9 +60,8 @@ impl MockMarket {
     }
 }
 
-/// The session's spend limit: 100 tokens per period of 1,000 ledgers.
+/// The session's spend limit: 100 tokens.
 const LIMIT: i128 = 100 * 10_000_000;
-const PERIOD: u32 = 1_000;
 
 struct World {
     e: Env,
@@ -100,37 +99,13 @@ fn setup() -> World {
     );
 
     let session_key = SigningKey::from_bytes(&[9u8; 32]);
-    let session_signer = Signer::External(
-        verifier.clone(),
-        Bytes::from_array(&e, &session_key.verifying_key().to_bytes()),
-    );
-    let mut policies: Map<Address, Val> = Map::new(&e);
-    let limit = SpendLimit {
-        limit: LIMIT,
-        period_ledgers: PERIOD,
-    };
-    policies.set(policy.clone(), limit.into_val(&e));
-    let valid_until: Option<u32> = Some(e.ledger().sequence() + 100_000);
 
-    // The owner adds the session rule and the wallet gets 1,000 tokens; only
-    // these calls are mocked.
+    // The wallet gets 1,000 tokens; only this call and the owner's are mocked.
     e.mock_all_auths();
     StellarAssetClient::new(&e, &token).mint(&wallet, &(10 * LIMIT));
-    let rule: ContextRule = e.invoke_contract(
-        &wallet,
-        &Symbol::new(&e, "add_context_rule"),
-        vec![
-            &e,
-            ContextRuleType::Default.into_val(&e),
-            String::from_str(&e, "Trading Session").into_val(&e),
-            valid_until.into_val(&e),
-            vec![&e, session_signer].into_val(&e),
-            policies.into_val(&e),
-        ],
-    );
     e.set_auths(&[]);
 
-    World {
+    let mut w = World {
         e,
         wallet,
         verifier,
@@ -138,8 +113,39 @@ fn setup() -> World {
         token,
         policy,
         session_key,
-        session_rule_id: rule.id,
-    }
+        session_rule_id: 0,
+    };
+    w.session_rule_id = add_session_rule(&w, LIMIT);
+    w
+}
+
+/// The owner adds a session rule with the session key as its only signer and
+/// the policy installed with `limit`. Returns the rule's id.
+fn add_session_rule(w: &World, limit: i128) -> u32 {
+    let e = &w.e;
+    let session_signer = Signer::External(
+        w.verifier.clone(),
+        Bytes::from_array(e, &w.session_key.verifying_key().to_bytes()),
+    );
+    let mut policies: Map<Address, Val> = Map::new(e);
+    policies.set(w.policy.clone(), limit.into_val(e));
+    let valid_until: Option<u32> = Some(e.ledger().sequence() + 100_000);
+
+    e.mock_all_auths();
+    let rule: ContextRule = e.invoke_contract(
+        &w.wallet,
+        &Symbol::new(e, "add_context_rule"),
+        vec![
+            e,
+            ContextRuleType::Default.into_val(e),
+            String::from_str(e, "Trading Session").into_val(e),
+            valid_until.into_val(e),
+            vec![e, session_signer].into_val(e),
+            policies.into_val(e),
+        ],
+    );
+    e.set_auths(&[]);
+    rule.id
 }
 
 fn sc_address(e: &Env, address: &Address) -> ScAddress {
@@ -402,7 +408,7 @@ fn empty_signature_on_the_session_rule_is_rejected_by_the_policy() {
 }
 
 #[test]
-fn session_key_spends_up_to_the_limit_per_period() {
+fn session_key_spends_up_to_the_limit() {
     let w = setup();
     let token = TokenClient::new(&w.e, &w.token);
     let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
@@ -418,11 +424,25 @@ fn session_key_spends_up_to_the_limit_per_period() {
     assert_eq!(token.balance(&w.market), LIMIT);
     let spend = policy.get_spend(&w.wallet, &w.session_rule_id).unwrap();
     assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
+}
 
-    // One ledger before the period ends the limit still holds.
-    w.e.ledger().with_mut(|l| l.sequence_number += PERIOD - 1);
-    assert!(!deposit(&w, 1, 5));
-    w.e.ledger().with_mut(|l| l.sequence_number += 1);
-    assert!(deposit(&w, LIMIT, 6));
-    assert_eq!(token.balance(&w.market), 2 * LIMIT);
+#[test]
+fn a_new_rule_gives_the_same_key_a_new_limit() {
+    let mut w = setup();
+    let token = TokenClient::new(&w.e, &w.token);
+    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
+    assert!(deposit(&w, LIMIT, 1));
+    assert!(!deposit(&w, 1, 2));
+
+    // The owner adds a second rule for the same key with a higher limit.
+    let used_up = w.session_rule_id;
+    w.session_rule_id = add_session_rule(&w, 2 * LIMIT);
+    assert_ne!(w.session_rule_id, used_up);
+    assert!(deposit(&w, 2 * LIMIT, 3));
+    assert!(!deposit(&w, 1, 4));
+    assert_eq!(token.balance(&w.market), 3 * LIMIT);
+
+    // The used-up rule keeps its count.
+    let spend = policy.get_spend(&w.wallet, &used_up).unwrap();
+    assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
 }

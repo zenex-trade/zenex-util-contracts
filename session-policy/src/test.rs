@@ -14,14 +14,13 @@ use soroban_sdk::{
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
 use crate::{
-    DataKey, SessionPolicyContract, SessionPolicyContractClient, Spend, SpendLimit, FEE_RECIPIENT,
-    FORWARDER, MARKETS, TOKEN,
+    DataKey, SessionPolicyContract, SessionPolicyContractClient, Spend, FEE_RECIPIENT, FORWARDER,
+    MARKETS, TOKEN,
 };
 
 const SCALAR_7: i128 = 10_000_000; // one token unit at 7 decimals
 const BALANCE: i128 = 1_000 * SCALAR_7; // the wallet's $1,000
-const LIMIT: i128 = 100 * SCALAR_7; // the session's limit per period
-const PERIOD: u32 = 17_280; // ~1 day
+const LIMIT: i128 = 100 * SCALAR_7; // the session's limit
 
 // ==========================================
 // Helpers
@@ -89,41 +88,23 @@ impl Setup<'_> {
         }
     }
 
-    /// Installs the policy under rule `id` with `LIMIT` per `PERIOD` and
-    /// returns the rule.
+    /// Installs the policy under rule `id` with `LIMIT` and returns the rule.
     fn install(&self, id: u32) -> ContextRule {
-        self.install_limit(id, LIMIT, PERIOD)
+        self.install_limit(id, LIMIT)
     }
 
-    fn install_limit(&self, id: u32, limit: i128, period_ledgers: u32) -> ContextRule {
+    fn install_limit(&self, id: u32, limit: i128) -> ContextRule {
         let rule = session_rule(&self.e, id);
-        let params = SpendLimit {
-            limit,
-            period_ledgers,
-        };
-        self.client.install(&params, &rule, &self.smart_account);
+        self.client.install(&limit, &rule, &self.smart_account);
         rule
     }
 
-    /// The amount the wallet has spent under `rule` in the current period.
+    /// The amount the wallet has spent under `rule`.
     fn spent(&self, rule: &ContextRule) -> i128 {
         self.client
             .get_spend(&self.smart_account, &rule.id)
             .unwrap()
             .spent
-    }
-
-    /// An honest forward that signs `max_fee` as its maximum fee.
-    fn forward_fee(&self, max_fee: i128) -> Context {
-        let mut args = self.signed_args(
-            "forward",
-            &self.token,
-            &self.fee_recipient,
-            &self.router,
-            "create_and_fill",
-        );
-        args.set(1, max_fee.into_val(&self.e));
-        self.call(&self.forwarder, "forward", args)
     }
 
     fn call(&self, contract: &Address, fn_name: &str, args: Vec<Val>) -> Context {
@@ -271,8 +252,6 @@ fn test_install_stores_the_limit_and_uninstall_removes_it() {
         s.client.get_spend(&s.smart_account, &3),
         Some(Spend {
             limit: LIMIT,
-            period_ledgers: PERIOD,
-            period_start: 0,
             spent: 0,
         })
     );
@@ -294,18 +273,12 @@ fn test_install_stores_the_limit_and_uninstall_removes_it() {
 }
 
 #[test]
-fn test_install_rejects_a_negative_limit_and_a_zero_period() {
+fn test_install_rejects_a_negative_limit() {
     let s = Setup::new();
     let rule = session_rule(&s.e, 0);
-    for (limit, period_ledgers) in [(-1, PERIOD), (LIMIT, 0)] {
-        let params = SpendLimit {
-            limit,
-            period_ledgers,
-        };
-        match s.client.try_install(&params, &rule, &s.smart_account) {
-            Err(Ok(error)) => assert_eq!(error.get_code(), 4010),
-            other => panic!("expected a contract error, got {other:?}"),
-        }
+    match s.client.try_install(&-1, &rule, &s.smart_account) {
+        Err(Ok(error)) => assert_eq!(error.get_code(), 4010),
+        other => panic!("expected a contract error, got {other:?}"),
     }
     assert_eq!(s.client.get_spend(&s.smart_account, &0), None);
 }
@@ -436,16 +409,23 @@ fn test_enforce_blocks_a_fee_in_another_token() {
     let rule = s.install(0);
     let other_token = Address::generate(&s.e);
 
-    // The root does not pin the fee token, but a fee in another token needs
-    // that token's `approve`, and only the configured token is allowed.
-    let args = s.signed_args(
-        "forward_dynamic",
-        &other_token,
-        &s.fee_recipient,
-        &s.router,
-        "create_and_fill",
-    );
-    s.enforce(&s.call(&s.forwarder, "forward_dynamic", args), &rule);
+    // The root pins the fee token, and the key cannot approve another token
+    // to the forwarder either.
+    for fn_name in ["forward", "forward_dynamic"] {
+        let args = s.signed_args(
+            fn_name,
+            &other_token,
+            &s.fee_recipient,
+            &s.router,
+            "create_and_fill",
+        );
+        assert_eq!(
+            s.enforce_error(&s.call(&s.forwarder, fn_name, args), &rule),
+            4006,
+            "{fn_name}"
+        );
+    }
+    assert_eq!(s.spent(&rule), 0);
     let e = &s.e;
     let approve = vec![
         e,
@@ -500,11 +480,7 @@ fn test_enforce_allows_every_configured_market() {
     let client = SessionPolicyContractClient::new(&e, &policy);
     let smart_account = Address::generate(&e);
     let rule = session_rule(&e, 0);
-    let params = SpendLimit {
-        limit: LIMIT,
-        period_ledgers: PERIOD,
-    };
-    client.install(&params, &rule, &smart_account);
+    client.install(&LIMIT, &rule, &smart_account);
     let signers: Vec<Signer> = rule.signers.clone();
 
     for market in [&market_a, &market_b] {
@@ -638,13 +614,14 @@ fn test_enforce_blocks_transfer_with_bad_to() {
 // ==========================================
 
 #[test]
-fn test_enforce_allows_forwarder_approve_at_any_amount() {
+fn test_enforce_allows_forwarder_approve_within_the_limit() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    for amount in [0, SCALAR_7, i128::MAX] {
+    for amount in [0, SCALAR_7, LIMIT - SCALAR_7] {
         s.enforce(&s.approve(&s.forwarder, amount), &rule);
     }
+    assert_eq!(s.enforce_error(&s.approve(&s.forwarder, 1), &rule), 4008);
 }
 
 #[test]
@@ -846,18 +823,18 @@ fn test_regression_v1_router_fee_envelope_is_blocked() {
 // ==========================================
 
 #[test]
-fn test_spend_counts_transfers_and_signed_maximum_fees() {
+fn test_spend_counts_transfers_and_fee_allowances() {
     let s = Setup::new();
     let rule = s.install(0);
     let market = s.market.into_val(&s.e);
 
     s.enforce(&s.transfer(market, 30 * SCALAR_7), &rule);
     assert_eq!(s.spent(&rule), 30 * SCALAR_7);
-    s.enforce(&s.forward_fee(2 * SCALAR_7), &rule);
+    s.enforce(&s.approve(&s.forwarder, 2 * SCALAR_7), &rule);
     assert_eq!(s.spent(&rule), 32 * SCALAR_7);
 
-    // An approval and a market call spend nothing.
-    s.enforce(&s.approve(&s.forwarder, BALANCE), &rule);
+    // The forward itself and a market call spend nothing.
+    s.enforce(&s.forward("forward", "create_and_fill"), &rule);
     s.enforce(&s.call(&s.market, "create_order", vec![&s.e]), &rule);
     assert_eq!(s.spent(&rule), 32 * SCALAR_7);
 }
@@ -874,10 +851,13 @@ fn test_spend_blocks_the_amount_that_passes_the_limit() {
         s.enforce_error(&s.transfer(market, SCALAR_7 + 1), &rule),
         4008
     );
-    assert_eq!(s.enforce_error(&s.forward_fee(SCALAR_7 + 1), &rule), 4008);
+    assert_eq!(
+        s.enforce_error(&s.approve(&s.forwarder, SCALAR_7 + 1), &rule),
+        4008
+    );
     assert_eq!(s.spent(&rule), LIMIT - SCALAR_7);
     // Exactly the limit passes, then nothing above zero does.
-    s.enforce(&s.forward_fee(SCALAR_7), &rule);
+    s.enforce(&s.approve(&s.forwarder, SCALAR_7), &rule);
     assert_eq!(s.spent(&rule), LIMIT);
     assert_eq!(s.enforce_error(&s.transfer(market, 1), &rule), 4008);
     s.enforce(&s.transfer(market, 0), &rule);
@@ -886,35 +866,25 @@ fn test_spend_blocks_the_amount_that_passes_the_limit() {
 #[test]
 fn test_spend_blocks_everything_above_zero_at_a_zero_limit() {
     let s = Setup::new();
-    let rule = s.install_limit(0, 0, PERIOD);
+    let rule = s.install_limit(0, 0);
     let market: Val = s.market.into_val(&s.e);
     assert_eq!(s.enforce_error(&s.transfer(market, 1), &rule), 4008);
-    assert_eq!(s.enforce_error(&s.forward_fee(1), &rule), 4008);
+    assert_eq!(s.enforce_error(&s.approve(&s.forwarder, 1), &rule), 4008);
     // A market call that moves no token still passes.
     s.enforce(&s.call(&s.market, "cancel_order", vec![&s.e]), &rule);
 }
 
 #[test]
-fn test_spend_starts_a_new_period_at_the_first_spend_after_the_old_one() {
+fn test_spend_never_resets_under_a_rule() {
     let s = Setup::new();
     let e = &s.e;
     let rule = s.install(0);
     let market: Val = s.market.into_val(e);
 
-    // The period starts at the first spend, not at install.
-    e.ledger().with_mut(|l| l.sequence_number = 500);
     s.enforce(&s.transfer(market, LIMIT), &rule);
-    let spend = s.client.get_spend(&s.smart_account, &0).unwrap();
-    assert_eq!(spend.period_start, 500);
-
-    e.ledger()
-        .with_mut(|l| l.sequence_number = 500 + PERIOD - 1);
+    e.ledger().with_mut(|l| l.sequence_number += 1_000_000);
     assert_eq!(s.enforce_error(&s.transfer(market, 1), &rule), 4008);
-
-    e.ledger().with_mut(|l| l.sequence_number = 500 + PERIOD);
-    s.enforce(&s.transfer(market, SCALAR_7), &rule);
-    let spend = s.client.get_spend(&s.smart_account, &0).unwrap();
-    assert_eq!((spend.period_start, spend.spent), (500 + PERIOD, SCALAR_7));
+    assert_eq!(s.spent(&rule), LIMIT);
 }
 
 #[test]
@@ -922,7 +892,7 @@ fn test_spend_is_counted_per_wallet_and_rule() {
     let s = Setup::new();
     let market: Val = s.market.into_val(&s.e);
     let rule = s.install(0);
-    let second = s.install_limit(1, 5 * SCALAR_7, PERIOD);
+    let second = s.install_limit(1, 5 * SCALAR_7);
 
     s.enforce(&s.transfer(market, LIMIT), &rule);
     // The second rule has its own, smaller limit and its own count.
@@ -952,7 +922,7 @@ fn test_spend_fails_after_uninstall() {
     s.client.uninstall(&rule, &s.smart_account);
     let market: Val = s.market.into_val(&s.e);
     assert_eq!(s.enforce_error(&s.transfer(market, 1), &rule), 4011);
-    assert_eq!(s.enforce_error(&s.forward_fee(1), &rule), 4011);
+    assert_eq!(s.enforce_error(&s.approve(&s.forwarder, 1), &rule), 4011);
 }
 
 #[test]
@@ -963,7 +933,7 @@ fn test_spend_rejects_a_missing_or_negative_amount() {
     let market: Val = s.market.into_val(e);
 
     assert_eq!(s.enforce_error(&s.transfer(market, -1), &rule), 4009);
-    assert_eq!(s.enforce_error(&s.forward_fee(-1), &rule), 4009);
+    assert_eq!(s.enforce_error(&s.approve(&s.forwarder, -1), &rule), 4009);
     // No amount, and an amount of another type.
     let args = vec![e, s.smart_account.into_val(e), market];
     assert_eq!(
@@ -981,7 +951,7 @@ fn test_spend_rejects_a_missing_or_negative_amount() {
 #[test]
 fn test_spend_blocks_an_amount_that_overflows() {
     let s = Setup::new();
-    let rule = s.install_limit(0, i128::MAX, PERIOD);
+    let rule = s.install_limit(0, i128::MAX);
     let market: Val = s.market.into_val(&s.e);
     s.enforce(&s.transfer(market, i128::MAX), &rule);
     assert_eq!(s.enforce_error(&s.transfer(market, 1), &rule), 4008);
