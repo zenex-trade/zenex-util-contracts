@@ -21,7 +21,7 @@ extern crate std;
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use fee_forwarder::{FeeForwarderContract, FeeForwarderContractClient};
-use session_policy::{SessionPolicyContract, SessionPolicyContractClient};
+use session_policy::{DataKey, SessionPolicyContract, Spend};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::{
@@ -314,6 +314,13 @@ fn relayed_deposit(w: &World, amount: i128, fee: i128, max_fee: i128) -> Relay<'
     }
 }
 
+/// The stored `Spend` of the wallet under the rule `rule_id`.
+fn stored_spend(w: &World, rule_id: u32) -> Spend {
+    let key = DataKey::Spend(w.wallet.clone(), rule_id);
+    w.e.as_contract(&w.policy, || w.e.storage().persistent().get(&key))
+        .unwrap()
+}
+
 /// Deposits `amount` signed by the session key, and returns whether the
 /// wallet authorized it.
 fn deposit(w: &World, amount: i128, nonce: i64) -> bool {
@@ -522,7 +529,6 @@ fn empty_signature_on_the_session_rule_is_rejected_by_the_policy() {
 fn session_key_spends_up_to_the_limit() {
     let w = setup();
     let token = TokenClient::new(&w.e, &w.token);
-    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
     let unit = LIMIT / 100;
 
     // 60 of the 100 pass, another 60 would make 120.
@@ -533,7 +539,7 @@ fn session_key_spends_up_to_the_limit() {
     assert!(deposit(&w, 40 * unit, 3));
     assert!(!deposit(&w, 1, 4));
     assert_eq!(token.balance(&w.market), LIMIT);
-    let spend = policy.get_spend(&w.wallet, &w.session_rule_id).unwrap();
+    let spend = stored_spend(&w, w.session_rule_id);
     assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
 }
 
@@ -541,7 +547,6 @@ fn session_key_spends_up_to_the_limit() {
 fn a_new_rule_gives_the_same_key_a_new_limit() {
     let mut w = setup();
     let token = TokenClient::new(&w.e, &w.token);
-    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
     assert!(deposit(&w, LIMIT, 1));
     assert!(!deposit(&w, 1, 2));
 
@@ -554,7 +559,7 @@ fn a_new_rule_gives_the_same_key_a_new_limit() {
     assert_eq!(token.balance(&w.market), 3 * LIMIT);
 
     // The used-up rule keeps its count.
-    let spend = policy.get_spend(&w.wallet, &used_up).unwrap();
+    let spend = stored_spend(&w, used_up);
     assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
 }
 
@@ -562,13 +567,7 @@ fn a_new_rule_gives_the_same_key_a_new_limit() {
 fn relayed_trade_counts_the_deposit_and_the_maximum_fee() {
     let w = setup();
     let token = TokenClient::new(&w.e, &w.token);
-    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
-    let spent = || {
-        policy
-            .get_spend(&w.wallet, &w.session_rule_id)
-            .unwrap()
-            .spent
-    };
+    let spent = || stored_spend(&w, w.session_rule_id).spent;
     let unit = LIMIT / 100;
 
     // A deposit of 50 with a fee of 1 under a maximum of 3: the wallet pays
@@ -624,7 +623,6 @@ fn used_up_key_cannot_pay_a_relay_fee() {
 fn relayed_trade_cannot_pay_another_recipient() {
     let w = setup();
     let token = TokenClient::new(&w.e, &w.token);
-    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
     let attacker = Address::generate(&w.e);
     let unit = LIMIT / 100;
 
@@ -633,6 +631,6 @@ fn relayed_trade_cannot_pay_another_recipient() {
     assert!(!relay(&w, stolen, 1));
     assert_eq!(token.balance(&attacker), 0);
     assert_eq!(token.balance(&w.market), 0);
-    let spend = policy.get_spend(&w.wallet, &w.session_rule_id).unwrap();
+    let spend = stored_spend(&w, w.session_rule_id);
     assert_eq!(spend.spent, 0);
 }

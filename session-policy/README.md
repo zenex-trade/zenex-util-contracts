@@ -31,9 +31,14 @@ token spends nothing.
 The count is gross: collateral a market pays back to the wallet does not lower it. An amount counts
 when the wallet authorizes it, so a transfer that then fails inside a forwarded call still counts.
 
-```
-get_spend(smart_account, context_rule_id) -> Option<{limit, spent}>
-```
+The limit and the amount spent are the persistent entry `Spend(smart_account, context_rule_id)`,
+a `{limit, spent}`. There is no getter: read the entry from the ledger.
+
+| Event | Topics | Data |
+|---|---|---|
+| `session_installed` | `smart_account` | `context_rule_id`, `limit` |
+| `session_spent` | `smart_account` | `context_rule_id`, `amount`, `total_spent` |
+| `session_uninstalled` | `smart_account` | `context_rule_id` |
 
 | Error | |
 |---|---|

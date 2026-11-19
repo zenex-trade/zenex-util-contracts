@@ -7,15 +7,15 @@ use soroban_sdk::{
     },
     testutils::{
         storage::{Instance as _, Persistent as _},
-        Address as _, Ledger as _, MuxedAddress as _,
+        Address as _, Events as _, Ledger as _, MuxedAddress as _,
     },
-    vec, Address, Bytes, BytesN, Env, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
+    vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
 };
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
 use crate::{
-    DataKey, SessionPolicyContract, SessionPolicyContractClient, Spend, FEE_RECIPIENT, FORWARDER,
-    MARKETS, TOKEN,
+    DataKey, SessionInstalled, SessionPolicyContract, SessionPolicyContractClient, SessionSpent,
+    SessionUninstalled, Spend, FEE_RECIPIENT, FORWARDER, MARKETS, TOKEN,
 };
 
 const SCALAR_7: i128 = 10_000_000; // one token unit at 7 decimals
@@ -99,12 +99,17 @@ impl Setup<'_> {
         rule
     }
 
+    /// The stored `Spend` of the wallet under rule `id`.
+    fn stored(&self, id: u32) -> Option<Spend> {
+        let key = DataKey::Spend(self.smart_account.clone(), id);
+        self.e.as_contract(&self.client.address, || {
+            self.e.storage().persistent().get(&key)
+        })
+    }
+
     /// The amount the wallet has spent under `rule`.
     fn spent(&self, rule: &ContextRule) -> i128 {
-        self.client
-            .get_spend(&self.smart_account, &rule.id)
-            .unwrap()
-            .spent
+        self.stored(rule.id).unwrap().spent
     }
 
     fn call(&self, contract: &Address, fn_name: &str, args: Vec<Val>) -> Context {
@@ -249,7 +254,7 @@ fn test_install_stores_the_limit_and_uninstall_removes_it() {
     let e = &s.e;
     let rule = s.install(3);
     assert_eq!(
-        s.client.get_spend(&s.smart_account, &3),
+        s.stored(3),
         Some(Spend {
             limit: LIMIT,
             spent: 0,
@@ -263,13 +268,58 @@ fn test_install_stores_the_limit_and_uninstall_removes_it() {
             .persistent()
             .has(&DataKey::Spend(s.smart_account.clone(), 3)));
     });
-    assert_eq!(s.client.get_spend(&s.smart_account, &4), None);
+    assert_eq!(s.stored(4), None);
 
     s.client.uninstall(&rule, &s.smart_account);
-    assert_eq!(s.client.get_spend(&s.smart_account, &3), None);
+    assert_eq!(s.stored(3), None);
     e.as_contract(&s.client.address, || {
         assert_eq!(e.storage().persistent().all().len(), 0);
     });
+}
+
+#[test]
+fn test_install_spend_and_uninstall_publish_events() {
+    let s = Setup::new();
+    let e = &s.e;
+    let policy = &s.client.address;
+
+    let rule = s.install(3);
+    let installed = SessionInstalled {
+        smart_account: s.smart_account.clone(),
+        context_rule_id: 3,
+        limit: LIMIT,
+    };
+    assert_eq!(
+        e.events().all().filter_by_contract(policy),
+        [installed.to_xdr(e, policy)]
+    );
+
+    s.enforce(&s.transfer(s.market.into_val(e), SCALAR_7), &rule);
+    s.enforce(&s.approve(&s.forwarder, 2 * SCALAR_7), &rule);
+    let enforced = SessionSpent {
+        smart_account: s.smart_account.clone(),
+        context_rule_id: 3,
+        amount: 2 * SCALAR_7,
+        total_spent: 3 * SCALAR_7,
+    };
+    assert_eq!(
+        e.events().all().filter_by_contract(policy),
+        [enforced.to_xdr(e, policy)]
+    );
+
+    // A forward and a market call spend nothing and publish nothing.
+    s.enforce(&s.forward("forward", "create_and_fill"), &rule);
+    assert_eq!(e.events().all().filter_by_contract(policy), []);
+
+    s.client.uninstall(&rule, &s.smart_account);
+    let uninstalled = SessionUninstalled {
+        smart_account: s.smart_account.clone(),
+        context_rule_id: 3,
+    };
+    assert_eq!(
+        e.events().all().filter_by_contract(policy),
+        [uninstalled.to_xdr(e, policy)]
+    );
 }
 
 #[test]
@@ -280,7 +330,7 @@ fn test_install_rejects_a_negative_limit() {
         Err(Ok(error)) => assert_eq!(error.get_code(), 4010),
         other => panic!("expected a contract error, got {other:?}"),
     }
-    assert_eq!(s.client.get_spend(&s.smart_account, &0), None);
+    assert_eq!(s.stored(0), None);
 }
 
 // ==========================================

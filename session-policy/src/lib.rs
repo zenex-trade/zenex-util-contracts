@@ -9,7 +9,8 @@ mod test;
 
 use soroban_sdk::{
     auth::{Context, ContractContext},
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
+    symbol_short,
     unwrap::UnwrapOptimized,
     Address, Env, Symbol, TryFromVal, Val, Vec,
 };
@@ -42,9 +43,39 @@ pub struct Spend {
 
 /// Persistent storage keys.
 #[contracttype]
-pub(crate) enum DataKey {
+pub enum DataKey {
     /// The `Spend` of `(smart_account, context_rule_id)`.
     Spend(Address, u32),
+}
+
+/// A wallet installed the policy under a rule with `limit`.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SessionInstalled {
+    #[topic]
+    pub smart_account: Address,
+    pub context_rule_id: u32,
+    pub limit: i128,
+}
+
+/// A wallet's session key spent `amount` under a rule.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SessionSpent {
+    #[topic]
+    pub smart_account: Address,
+    pub context_rule_id: u32,
+    pub amount: i128,
+    pub total_spent: i128,
+}
+
+/// A wallet removed the policy from a rule.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SessionUninstalled {
+    #[topic]
+    pub smart_account: Address,
+    pub context_rule_id: u32,
 }
 
 #[contracterror]
@@ -166,7 +197,10 @@ impl Policy for SessionPolicyContract {
                 panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
             }
             // Both functions carry the amount at index 2.
-            spend(e, smart_account, context_rule.id, args.get(2));
+            let Some(amount) = amount_arg(e, &args, 2) else {
+                panic_with_error!(e, SessionPolicyError::InvalidAmount);
+            };
+            spend(e, smart_account, context_rule.id, amount);
         } else if !markets(e).contains(&contract) {
             panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         }
@@ -183,28 +217,30 @@ impl Policy for SessionPolicyContract {
         if limit < 0 {
             panic_with_error!(e, SessionPolicyError::InvalidLimit);
         }
-        let key = DataKey::Spend(smart_account, context_rule.id);
+        let key = DataKey::Spend(smart_account.clone(), context_rule.id);
         let persistent = e.storage().persistent();
         persistent.set(&key, &Spend { limit, spent: 0 });
         persistent.extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
+
+        SessionInstalled {
+            smart_account,
+            context_rule_id: context_rule.id,
+            limit,
+        }
+        .publish(e);
     }
 
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
         e.storage()
             .persistent()
-            .remove(&DataKey::Spend(smart_account, context_rule.id));
-    }
-}
+            .remove(&DataKey::Spend(smart_account.clone(), context_rule.id));
 
-#[contractimpl]
-impl SessionPolicyContract {
-    /// The limit and the spending of `smart_account` under the rule
-    /// `context_rule_id`, or `None` if the policy is not installed there.
-    pub fn get_spend(e: Env, smart_account: Address, context_rule_id: u32) -> Option<Spend> {
-        e.storage()
-            .persistent()
-            .get(&DataKey::Spend(smart_account, context_rule_id))
+        SessionUninstalled {
+            smart_account,
+            context_rule_id: context_rule.id,
+        }
+        .publish(e);
     }
 }
 
@@ -219,16 +255,21 @@ fn address_arg(e: &Env, args: &Vec<Val>, index: u32) -> Option<Address> {
         .and_then(|val| Address::try_from_val(e, &val).ok())
 }
 
-/// Counts `amount` against the limit of `smart_account` under the rule
-/// `context_rule_id`. Fails if the amount is missing or negative, or if it
-/// takes the rule's spending over the limit.
-fn spend(e: &Env, smart_account: Address, context_rule_id: u32, amount: Option<Val>) {
-    let amount = amount
+/// The argument at `index` as an `i128`, or `None` if it is missing or not one.
+fn amount_arg(e: &Env, args: &Vec<Val>, index: u32) -> Option<i128> {
+    args.get(index)
         .and_then(|val| i128::try_from_val(e, &val).ok())
-        .filter(|amount| *amount >= 0)
-        .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidAmount));
+}
 
-    let key = DataKey::Spend(smart_account, context_rule_id);
+/// Counts `amount` against the limit of `smart_account` under the rule
+/// `context_rule_id`. Fails if the amount is negative, or if it takes the
+/// rule's spending over the limit.
+fn spend(e: &Env, smart_account: Address, context_rule_id: u32, amount: i128) {
+    if amount < 0 {
+        panic_with_error!(e, SessionPolicyError::InvalidAmount);
+    }
+
+    let key = DataKey::Spend(smart_account.clone(), context_rule_id);
     let persistent = e.storage().persistent();
     let mut spend: Spend = persistent
         .get(&key)
@@ -242,4 +283,12 @@ fn spend(e: &Env, smart_account: Address, context_rule_id: u32, amount: Option<V
 
     persistent.set(&key, &spend);
     persistent.extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
+
+    SessionSpent {
+        smart_account,
+        context_rule_id,
+        amount,
+        total_spent: spend.spent,
+    }
+    .publish(e);
 }
