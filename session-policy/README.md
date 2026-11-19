@@ -52,3 +52,4 @@ a `{limit, spent}`. There is no getter: read the entry from the ledger.
 | 4009 | Transfer or approve amount missing or negative |
 | 4010 | Negative limit at install |
 | 4011 | No limit stored for the wallet and rule |
+| 4012 | Limit already stored for the wallet and rule |

@@ -102,6 +102,8 @@ pub enum SessionPolicyError {
     InvalidLimit = 4010,
     // The wallet has no limit stored under the rule.
     NotInstalled = 4011,
+    // The wallet already has a limit stored under the rule.
+    AlreadyInstalled = 4012,
 }
 
 // ==========================================
@@ -219,6 +221,9 @@ impl Policy for SessionPolicyContract {
         }
         let key = DataKey::Spend(smart_account.clone(), context_rule.id);
         let persistent = e.storage().persistent();
+        if persistent.has(&key) {
+            panic_with_error!(e, SessionPolicyError::AlreadyInstalled);
+        }
         persistent.set(&key, &Spend { limit, spent: 0 });
         persistent.extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
 

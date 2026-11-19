@@ -323,6 +323,25 @@ fn test_install_spend_and_uninstall_publish_events() {
 }
 
 #[test]
+fn test_install_twice_under_a_rule_is_rejected() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    s.enforce(&s.transfer(s.market.into_val(&s.e), LIMIT), &rule);
+
+    // A second install would reset the count.
+    match s.client.try_install(&LIMIT, &rule, &s.smart_account) {
+        Err(Ok(error)) => assert_eq!(error.get_code(), 4012),
+        other => panic!("expected a contract error, got {other:?}"),
+    }
+    assert_eq!(s.spent(&rule), LIMIT);
+
+    // After an uninstall the rule can be installed again.
+    s.client.uninstall(&rule, &s.smart_account);
+    s.client.install(&LIMIT, &rule, &s.smart_account);
+    assert_eq!(s.spent(&rule), 0);
+}
+
+#[test]
 fn test_install_rejects_a_negative_limit() {
     let s = Setup::new();
     let rule = session_rule(&s.e, 0);
