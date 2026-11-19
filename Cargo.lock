@@ -1522,6 +1522,7 @@ name = "session-policy"
 version = "1.0.0"
 dependencies = [
  "ed25519-dalek",
+ "fee-forwarder",
  "soroban-sdk",
  "stellar-accounts",
 ]
