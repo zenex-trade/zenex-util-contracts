@@ -247,10 +247,10 @@ struct Relay<'a> {
     fee_recipient: Address,
 }
 
-/// Relays `relay` signed by the session key, and returns whether it went
-/// through. The wallet authorizes the forward, the fee allowance the
+/// Relays `relay` signed by the session key, and returns the panic message if
+/// it fails. The wallet authorizes the forward, the fee allowance the
 /// forwarder sets, and the market call.
-fn relay(w: &World, relay: Relay, nonce: i64) -> bool {
+fn relay(w: &World, relay: Relay, nonce: i64) -> Result<(), std::string::String> {
     let e = &w.e;
     let expiration = e.ledger().sequence() + 100;
     let target_fn = Symbol::new(e, relay.target_fn);
@@ -284,8 +284,9 @@ fn relay(w: &World, relay: Relay, nonce: i64) -> bool {
     // The forward, the approve and the market call's own contexts.
     let payload = session_payload_for(w, &root, nonce, expiration, 2 + relay.target_contexts);
     e.set_auths(&[entry(w, root, payload, nonce, expiration)]);
-    FeeForwarderContractClient::new(e, &w.forwarder)
-        .try_forward(
+    let client = FeeForwarderContractClient::new(e, &w.forwarder);
+    catch(|| {
+        client.forward(
             &w.token,
             &relay.fee,
             &relay.max_fee,
@@ -295,8 +296,8 @@ fn relay(w: &World, relay: Relay, nonce: i64) -> bool {
             &relay.target_args,
             &w.wallet,
             &relay.fee_recipient,
-        )
-        .is_ok()
+        );
+    })
 }
 
 /// A relayed `market.deposit(wallet, token, amount)` paying `fee` of at most
@@ -321,16 +322,43 @@ fn stored_spend(w: &World, rule_id: u32) -> Spend {
         .unwrap()
 }
 
-/// Deposits `amount` signed by the session key, and returns whether the
-/// wallet authorized it.
-fn deposit(w: &World, amount: i128, nonce: i64) -> bool {
+/// Deposits `amount` signed by the session key, and returns the panic message
+/// if the wallet does not authorize it.
+fn deposit(w: &World, amount: i128, nonce: i64) -> Result<(), std::string::String> {
     let expiration = w.e.ledger().sequence() + 100;
     let root = deposit_invocation(w, amount);
     // Two contexts: the deposit and the transfer it makes.
     let payload = session_payload_for(w, &root, nonce, expiration, 2);
     w.e.set_auths(&[entry(w, root, payload, nonce, expiration)]);
     let client = MockMarketClient::new(&w.e, &w.market);
-    client.try_deposit(&w.wallet, &w.token, &amount).is_ok()
+    catch(|| client.deposit(&w.wallet, &w.token, &amount))
+}
+
+/// Runs `call`, and returns its panic message if it panics. The message of a
+/// failed authorization carries the policy's own error, which a `try_` call
+/// reports only as the account's `Error(Auth, InvalidAction)`.
+fn catch<T>(call: impl FnOnce() -> T) -> Result<T, std::string::String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).map_err(|payload| {
+        payload
+            .downcast_ref::<std::string::String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|s| std::string::String::from(*s))
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Asserts that `result` failed with the policy error `code`.
+fn assert_refused<T: core::fmt::Debug>(result: Result<T, std::string::String>, code: u32) {
+    let error = result.expect_err("the policy must refuse the call");
+    let expected = std::format!("Error(Contract, #{code})");
+    assert!(
+        error.contains(&expected),
+        "expected the policy error {code}, got: {error}"
+    );
 }
 
 /// The wallet's authorization entry over `root`, carrying `payload`.
@@ -448,20 +476,7 @@ fn legacy_session_payload(
 /// authorization fails.
 fn cancel(w: &World, id: u32) -> Result<u32, std::string::String> {
     let client = MockMarketClient::new(&w.e, &w.market);
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.cancel_order(&w.wallet, &id)
-    }))
-    .map_err(|payload| {
-        payload
-            .downcast_ref::<std::string::String>()
-            .cloned()
-            .or_else(|| {
-                payload
-                    .downcast_ref::<&str>()
-                    .map(|s| std::string::String::from(*s))
-            })
-            .unwrap_or_default()
-    })
+    catch(|| client.cancel_order(&w.wallet, &id))
 }
 
 #[test]
@@ -532,12 +547,12 @@ fn session_key_spends_up_to_the_limit() {
     let unit = LIMIT / 100;
 
     // 60 of the 100 pass, another 60 would make 120.
-    assert!(deposit(&w, 60 * unit, 1));
-    assert!(!deposit(&w, 60 * unit, 2));
+    assert_eq!(deposit(&w, 60 * unit, 1), Ok(()));
+    assert_refused(deposit(&w, 60 * unit, 2), 4008);
     assert_eq!(token.balance(&w.market), 60 * unit);
     // The refused deposit left the count alone, and 40 still fit.
-    assert!(deposit(&w, 40 * unit, 3));
-    assert!(!deposit(&w, 1, 4));
+    assert_eq!(deposit(&w, 40 * unit, 3), Ok(()));
+    assert_refused(deposit(&w, 1, 4), 4008);
     assert_eq!(token.balance(&w.market), LIMIT);
     let spend = stored_spend(&w, w.session_rule_id);
     assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
@@ -547,15 +562,15 @@ fn session_key_spends_up_to_the_limit() {
 fn a_new_rule_gives_the_same_key_a_new_limit() {
     let mut w = setup();
     let token = TokenClient::new(&w.e, &w.token);
-    assert!(deposit(&w, LIMIT, 1));
-    assert!(!deposit(&w, 1, 2));
+    assert_eq!(deposit(&w, LIMIT, 1), Ok(()));
+    assert_refused(deposit(&w, 1, 2), 4008);
 
     // The owner adds a second rule for the same key with a higher limit.
     let used_up = w.session_rule_id;
     w.session_rule_id = add_session_rule(&w, 2 * LIMIT);
     assert_ne!(w.session_rule_id, used_up);
-    assert!(deposit(&w, 2 * LIMIT, 3));
-    assert!(!deposit(&w, 1, 4));
+    assert_eq!(deposit(&w, 2 * LIMIT, 3), Ok(()));
+    assert_refused(deposit(&w, 1, 4), 4008);
     assert_eq!(token.balance(&w.market), 3 * LIMIT);
 
     // The used-up rule keeps its count.
@@ -572,7 +587,10 @@ fn relayed_trade_counts_the_deposit_and_the_maximum_fee() {
 
     // A deposit of 50 with a fee of 1 under a maximum of 3: the wallet pays
     // 51 and the limit counts 53.
-    assert!(relay(&w, relayed_deposit(&w, 50 * unit, unit, 3 * unit), 1));
+    assert_eq!(
+        relay(&w, relayed_deposit(&w, 50 * unit, unit, 3 * unit), 1),
+        Ok(())
+    );
     assert_eq!(token.balance(&w.market), 50 * unit);
     assert_eq!(token.balance(&w.fee_recipient), unit);
     assert_eq!(token.balance(&w.wallet), 10 * LIMIT - 51 * unit);
@@ -580,12 +598,18 @@ fn relayed_trade_counts_the_deposit_and_the_maximum_fee() {
     assert_eq!(spent(), 53 * unit);
 
     // 47 are left: a deposit of 47 with a maximum fee of 1 makes 48.
-    assert!(!relay(&w, relayed_deposit(&w, 47 * unit, unit, unit), 2));
+    assert_refused(
+        relay(&w, relayed_deposit(&w, 47 * unit, unit, unit), 2),
+        4008,
+    );
     assert_eq!(token.balance(&w.market), 50 * unit);
     assert_eq!(token.balance(&w.fee_recipient), unit);
     assert_eq!(spent(), 53 * unit);
 
-    assert!(relay(&w, relayed_deposit(&w, 46 * unit, unit, unit), 3));
+    assert_eq!(
+        relay(&w, relayed_deposit(&w, 46 * unit, unit, unit), 3),
+        Ok(())
+    );
     assert_eq!(token.balance(&w.market), 96 * unit);
     assert_eq!(token.balance(&w.fee_recipient), 2 * unit);
     assert_eq!(spent(), LIMIT);
@@ -596,7 +620,7 @@ fn used_up_key_cannot_pay_a_relay_fee() {
     let w = setup();
     let e = &w.e;
     let token = TokenClient::new(e, &w.token);
-    assert!(deposit(&w, LIMIT, 1));
+    assert_eq!(deposit(&w, LIMIT, 1), Ok(()));
 
     // A relayed cancel moves no collateral, but its fee allowance counts.
     let relayed_cancel = Relay {
@@ -608,7 +632,7 @@ fn used_up_key_cannot_pay_a_relay_fee() {
         max_fee: 1,
         fee_recipient: w.fee_recipient.clone(),
     };
-    assert!(!relay(&w, relayed_cancel, 2));
+    assert_refused(relay(&w, relayed_cancel, 2), 4008);
     assert_eq!(token.balance(&w.fee_recipient), 0);
 
     // The same cancel sent directly spends nothing and passes.
@@ -628,7 +652,7 @@ fn relayed_trade_cannot_pay_another_recipient() {
 
     let mut stolen = relayed_deposit(&w, unit, unit, unit);
     stolen.fee_recipient = attacker.clone();
-    assert!(!relay(&w, stolen, 1));
+    assert_refused(relay(&w, stolen, 1), 4006);
     assert_eq!(token.balance(&attacker), 0);
     assert_eq!(token.balance(&w.market), 0);
     let spend = stored_spend(&w, w.session_rule_id);
