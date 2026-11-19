@@ -3,13 +3,14 @@
 Soroban contracts used alongside the [Zenex](https://docs.zenex.trade) perpetual futures markets on
 [Stellar](https://stellar.org). They are separate from the
 [core contracts](https://github.com/zenex-trade/zenex-contracts): none of them holds user funds
-between calls, and none has an admin or an upgrade function.
+between calls, and none has an upgrade function. Only `guardian` has an owner.
 
 ## Contracts
 
 | Crate | Description |
 |-------|-------------|
 | [`fee-forwarder`](fee-forwarder/README.md) | Lets a user pay a relayer in a token instead of paying the network fee. It collects the fee the user signed a cap for, sends it to the fee recipient and makes the user's call in the same invocation. A failing call reverts the fee, and the contract keeps no state. |
+| [`guardian`](guardian/README.md) | Owns the market contracts, directly or through the governance timelock. Its owner forwards any call to them and grants the `guardian` role, whose holders can move a market to a stricter status and nothing else. Resuming, delisting and retiring a market stay with the owner. |
 | [`market-router`](market-router/README.md) | Batches contract calls into one transaction, all-or-nothing or with a result per call. It also runs the create-and-fill flows, which create an order on a market and fill it in the same transaction. It is stateless and holds nothing. |
 | [`session-policy`](session-policy/README.md) | A policy for an OpenZeppelin smart account that limits a session key to trading. The key may call the configured markets, move the collateral token into them, and pay relay fees through the forwarder to one fixed recipient. Everything else is refused, and the configuration is fixed at deployment. |
 | [`referral`](referral/README.md) | Records that one wallet was referred by another. The referred wallet authorizes the call and the contract emits an event, which is the whole record. There is no storage. |
@@ -33,6 +34,10 @@ make fmt
 The tests need no built WASM. The WASMs they load are checked in, and a `NOTICE.md` next to them
 records each file's source, revision, hash and licence:
 
+- [guardian/testdata/governance_v1.0.0.wasm](guardian/testdata/governance_v1.0.0.wasm) is the
+  release build of the Zenex `governance` contract from the
+  [core contracts](https://github.com/zenex-trade/zenex-contracts) (AGPL-3.0-only). See
+  [guardian/testdata/NOTICE.md](guardian/testdata/NOTICE.md).
 - [market-router/testdata/market.wasm](market-router/testdata/market.wasm) is a build of the Zenex
   `market` contract from the [core contracts](https://github.com/zenex-trade/zenex-contracts)
   (AGPL-3.0-only). See [market-router/testdata/NOTICE.md](market-router/testdata/NOTICE.md).
@@ -51,8 +56,8 @@ records each file's source, revision, hash and licence:
 `fee-forwarder`, `session-policy` and `wallet-factory` use OpenZeppelin's
 [stellar-contracts](https://github.com/OpenZeppelin/stellar-contracts) crates
 `stellar-fee-abstraction` and `stellar-accounts`, at the released version
-[0.8.0](https://github.com/OpenZeppelin/stellar-contracts/releases/tag/v0.8.0) from crates.io. All
-five contracts build on soroban-sdk 28.0.0, the version that release builds with. `Cargo.lock` pins
+[0.8.0](https://github.com/OpenZeppelin/stellar-contracts/releases/tag/v0.8.0) from crates.io.
+`guardian` uses `stellar-access` and `stellar-macros` of the same release. All six contracts build on soroban-sdk 28.0.0, the version that release builds with. `Cargo.lock` pins
 every dependency.
 
 `stellar-accounts` 0.8.0 contains the fix of the smart-account advisory
@@ -75,7 +80,7 @@ release is named `<tag>_<package>_cli27.0.0` and its file `<package>_<tag>.wasm`
 
 The contracts are built one after another, and a last job submits every hash to stellar.expert
 again, spaced out. The order is fee-forwarder, market-router, session-policy, referral,
-wallet-factory. A failed job does not stop the contracts after it.
+wallet-factory, guardian. A failed job does not stop the contracts after it.
 
 Re-running a job on GitHub also re-runs every job that depends on it, here every contract later in
 the order and the resubmission. So if one contract's job fails after it published its release,

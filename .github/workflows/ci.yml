@@ -24,7 +24,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
       # Native tests need no built WASM: the only WASMs they load are the
-      # committed testdata in market-router/testdata/ and session-policy/testdata/.
+      # committed testdata in guardian/testdata/, market-router/testdata/ and
+      # session-policy/testdata/.
       - run: cargo test --locked --workspace
       # `make build` shells out to `stellar contract build --optimize`; the
       # published release binaries ship with the wasm-opt support that flag
