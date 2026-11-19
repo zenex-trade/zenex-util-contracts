@@ -20,6 +20,7 @@
 extern crate std;
 
 use ed25519_dalek::{Signer as _, SigningKey};
+use fee_forwarder::{FeeForwarderContract, FeeForwarderContractClient};
 use session_policy::{SessionPolicyContract, SessionPolicyContractClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
@@ -69,6 +70,8 @@ struct World {
     verifier: Address,
     market: Address,
     token: Address,
+    forwarder: Address,
+    fee_recipient: Address,
     policy: Address,
     session_key: SigningKey,
     session_rule_id: u32,
@@ -88,13 +91,15 @@ fn setup() -> World {
     let token = e
         .register_stellar_asset_contract_v2(Address::generate(&e))
         .address();
+    let forwarder = e.register(FeeForwarderContract, ());
+    let fee_recipient = Address::generate(&e);
     let policy = e.register(
         SessionPolicyContract,
         (
-            Address::generate(&e),
+            forwarder.clone(),
             vec![&e, market.clone()],
             token.clone(),
-            Address::generate(&e),
+            fee_recipient.clone(),
         ),
     );
 
@@ -111,6 +116,8 @@ fn setup() -> World {
         verifier,
         market,
         token,
+        forwarder,
+        fee_recipient,
         policy,
         session_key,
         session_rule_id: 0,
@@ -200,6 +207,110 @@ fn deposit_invocation(w: &World, amount: i128) -> SorobanAuthorizedInvocation {
                 .unwrap(),
         }),
         sub_invocations: std::vec![transfer].try_into().unwrap(),
+    }
+}
+
+/// The authorized invocation `contract.fn_name(args)` with the invocations it
+/// makes.
+fn invocation(
+    w: &World,
+    contract: &Address,
+    fn_name: &str,
+    args: &[Val],
+    sub_invocations: std::vec::Vec<SorobanAuthorizedInvocation>,
+) -> SorobanAuthorizedInvocation {
+    let e = &w.e;
+    let args: std::vec::Vec<ScVal> = args
+        .iter()
+        .map(|v| ScVal::try_from_val(e, v).unwrap())
+        .collect();
+    SorobanAuthorizedInvocation {
+        function: SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+            contract_address: sc_address(e, contract),
+            function_name: ScSymbol(fn_name.try_into().unwrap()),
+            args: args.try_into().unwrap(),
+        }),
+        sub_invocations: sub_invocations.try_into().unwrap(),
+    }
+}
+
+/// A market call relayed through the forwarder.
+struct Relay<'a> {
+    /// The market function and its arguments.
+    target_fn: &'a str,
+    target_args: Vec<Val>,
+    /// The market call's authorized invocation and its number of contexts.
+    target: SorobanAuthorizedInvocation,
+    target_contexts: u32,
+    fee: i128,
+    max_fee: i128,
+    fee_recipient: Address,
+}
+
+/// Relays `relay` signed by the session key, and returns whether it went
+/// through. The wallet authorizes the forward, the fee allowance the
+/// forwarder sets, and the market call.
+fn relay(w: &World, relay: Relay, nonce: i64) -> bool {
+    let e = &w.e;
+    let expiration = e.ledger().sequence() + 100;
+    let target_fn = Symbol::new(e, relay.target_fn);
+    let approve = invocation(
+        w,
+        &w.token,
+        "approve",
+        &[
+            w.wallet.to_val(),
+            w.forwarder.to_val(),
+            relay.max_fee.into_val(e),
+            expiration.into_val(e),
+        ],
+        std::vec![],
+    );
+    let root = invocation(
+        w,
+        &w.forwarder,
+        "forward",
+        &[
+            w.token.to_val(),
+            relay.max_fee.into_val(e),
+            expiration.into_val(e),
+            relay.fee_recipient.to_val(),
+            w.market.to_val(),
+            target_fn.to_val(),
+            relay.target_args.to_val(),
+        ],
+        std::vec![approve, relay.target],
+    );
+    // The forward, the approve and the market call's own contexts.
+    let payload = session_payload_for(w, &root, nonce, expiration, 2 + relay.target_contexts);
+    e.set_auths(&[entry(w, root, payload, nonce, expiration)]);
+    FeeForwarderContractClient::new(e, &w.forwarder)
+        .try_forward(
+            &w.token,
+            &relay.fee,
+            &relay.max_fee,
+            &expiration,
+            &w.market,
+            &target_fn,
+            &relay.target_args,
+            &w.wallet,
+            &relay.fee_recipient,
+        )
+        .is_ok()
+}
+
+/// A relayed `market.deposit(wallet, token, amount)` paying `fee` of at most
+/// `max_fee` to the configured recipient.
+fn relayed_deposit(w: &World, amount: i128, fee: i128, max_fee: i128) -> Relay<'static> {
+    let e = &w.e;
+    Relay {
+        target_fn: "deposit",
+        target_args: vec![e, w.wallet.to_val(), w.token.to_val(), amount.into_val(e)],
+        target: deposit_invocation(w, amount),
+        target_contexts: 2,
+        fee,
+        max_fee,
+        fee_recipient: w.fee_recipient.clone(),
     }
 }
 
@@ -445,4 +556,83 @@ fn a_new_rule_gives_the_same_key_a_new_limit() {
     // The used-up rule keeps its count.
     let spend = policy.get_spend(&w.wallet, &used_up).unwrap();
     assert_eq!((spend.spent, spend.limit), (LIMIT, LIMIT));
+}
+
+#[test]
+fn relayed_trade_counts_the_deposit_and_the_maximum_fee() {
+    let w = setup();
+    let token = TokenClient::new(&w.e, &w.token);
+    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
+    let spent = || {
+        policy
+            .get_spend(&w.wallet, &w.session_rule_id)
+            .unwrap()
+            .spent
+    };
+    let unit = LIMIT / 100;
+
+    // A deposit of 50 with a fee of 1 under a maximum of 3: the wallet pays
+    // 51 and the limit counts 53.
+    assert!(relay(&w, relayed_deposit(&w, 50 * unit, unit, 3 * unit), 1));
+    assert_eq!(token.balance(&w.market), 50 * unit);
+    assert_eq!(token.balance(&w.fee_recipient), unit);
+    assert_eq!(token.balance(&w.wallet), 10 * LIMIT - 51 * unit);
+    assert_eq!(token.allowance(&w.wallet, &w.forwarder), 0);
+    assert_eq!(spent(), 53 * unit);
+
+    // 47 are left: a deposit of 47 with a maximum fee of 1 makes 48.
+    assert!(!relay(&w, relayed_deposit(&w, 47 * unit, unit, unit), 2));
+    assert_eq!(token.balance(&w.market), 50 * unit);
+    assert_eq!(token.balance(&w.fee_recipient), unit);
+    assert_eq!(spent(), 53 * unit);
+
+    assert!(relay(&w, relayed_deposit(&w, 46 * unit, unit, unit), 3));
+    assert_eq!(token.balance(&w.market), 96 * unit);
+    assert_eq!(token.balance(&w.fee_recipient), 2 * unit);
+    assert_eq!(spent(), LIMIT);
+}
+
+#[test]
+fn used_up_key_cannot_pay_a_relay_fee() {
+    let w = setup();
+    let e = &w.e;
+    let token = TokenClient::new(e, &w.token);
+    assert!(deposit(&w, LIMIT, 1));
+
+    // A relayed cancel moves no collateral, but its fee allowance counts.
+    let relayed_cancel = Relay {
+        target_fn: "cancel_order",
+        target_args: vec![e, w.wallet.to_val(), 7u32.into_val(e)],
+        target: cancel_invocation(&w, 7),
+        target_contexts: 1,
+        fee: 1,
+        max_fee: 1,
+        fee_recipient: w.fee_recipient.clone(),
+    };
+    assert!(!relay(&w, relayed_cancel, 2));
+    assert_eq!(token.balance(&w.fee_recipient), 0);
+
+    // The same cancel sent directly spends nothing and passes.
+    let expiration = e.ledger().sequence() + 100;
+    let root = cancel_invocation(&w, 7);
+    let payload = session_payload(&w, &root, 3, expiration);
+    e.set_auths(&[entry(&w, root, payload, 3, expiration)]);
+    assert_eq!(cancel(&w, 7), Ok(7));
+}
+
+#[test]
+fn relayed_trade_cannot_pay_another_recipient() {
+    let w = setup();
+    let token = TokenClient::new(&w.e, &w.token);
+    let policy = SessionPolicyContractClient::new(&w.e, &w.policy);
+    let attacker = Address::generate(&w.e);
+    let unit = LIMIT / 100;
+
+    let mut stolen = relayed_deposit(&w, unit, unit, unit);
+    stolen.fee_recipient = attacker.clone();
+    assert!(!relay(&w, stolen, 1));
+    assert_eq!(token.balance(&attacker), 0);
+    assert_eq!(token.balance(&w.market), 0);
+    let spend = policy.get_spend(&w.wallet, &w.session_rule_id).unwrap();
+    assert_eq!(spend.spent, 0);
 }
