@@ -1,7 +1,8 @@
 name: Release
 
-# A version tag builds every contract with stellar.expert's reusable workflow,
-# pinned to its v27.0.0 commit, which builds with Stellar CLI 27.0.0. Each build
+# A version tag builds each contract at that version with stellar.expert's
+# reusable workflow, pinned to its v27.0.0 commit, which builds with Stellar
+# CLI 27.0.0. Each build
 # job publishes a GitHub release with the optimized WASM, attests its build
 # provenance and submits the WASM hash to stellar.expert, which marks a contract
 # running that exact WASM as verified against this source. Deploy the WASMs
@@ -30,33 +31,42 @@ permissions:
 # No `relative_path`: the crates are members of the root workspace, so each
 # job builds from the root with `package`.
 jobs:
-  # The tag must be `v<version>` of every contract crate. The build jobs name
-  # their release `<tag>_<package>_cli<cli version>` only then, and the last
-  # job looks the releases up under that name.
+  # Lists the contract crates whose version is the tag's: only those are built.
+  # A crate at another version keeps its earlier release. Fails if no crate
+  # matches the tag.
   check-version:
     if: github.repository == 'zenex-trade/zenex-util-contracts'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      # The matching packages, each between commas: `,session-policy,guardian,`.
+      packages: ${{ steps.match.outputs.packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Compare the tag with the crate versions
+      - name: Match the tag with the crate versions
+        id: match
         env:
           TAG: ${{ github.ref_name }}
           PACKAGES: fee-forwarder market-router session-policy referral wallet-factory guardian
         run: |
-          status=0
+          matched=","
           for package in $PACKAGES; do
             version=$(grep -m1 '^version = ' "$package/Cargo.toml" | cut -d '"' -f2)
-            if [ "v$version" != "$TAG" ]; then
-              echo "::error::$package is version $version, the tag is $TAG"
-              status=1
+            if [ "v$version" = "$TAG" ]; then
+              matched="$matched$package,"
+            else
+              echo "$package is version $version: not built"
             fi
           done
-          exit $status
+          if [ "$matched" = "," ]; then
+            echo "::error::no contract crate is at version ${TAG#v}"
+            exit 1
+          fi
+          echo "packages=$matched" >> "$GITHUB_OUTPUT"
 
   # The build jobs run one after another, so their submissions to
   # stellar.expert are spaced. A job that fails does not stop the ones after
@@ -67,7 +77,7 @@ jobs:
   # (`gh release delete <tag>_<package>_cli27.0.0 --cleanup-tag`), then re-run
   # the failed job.
   fee-forwarder:
-    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' && contains(needs.check-version.outputs.packages, ',fee-forwarder,') }}
     needs: check-version
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -79,7 +89,7 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   market-router:
-    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' && contains(needs.check-version.outputs.packages, ',market-router,') }}
     needs: [check-version, fee-forwarder]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -91,7 +101,7 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   session-policy:
-    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' && contains(needs.check-version.outputs.packages, ',session-policy,') }}
     needs: [check-version, market-router]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -103,7 +113,7 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   referral:
-    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' && contains(needs.check-version.outputs.packages, ',referral,') }}
     needs: [check-version, session-policy]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -115,7 +125,7 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   wallet-factory:
-    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' && contains(needs.check-version.outputs.packages, ',wallet-factory,') }}
     needs: [check-version, referral]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -127,7 +137,7 @@ jobs:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
   guardian:
-    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' }}
+    if: ${{ !cancelled() && github.repository == 'zenex-trade/zenex-util-contracts' && needs.check-version.result == 'success' && contains(needs.check-version.outputs.packages, ',guardian,') }}
     needs: [check-version, wallet-factory]
     uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
     with:
@@ -138,7 +148,7 @@ jobs:
     secrets:
       release_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Submits every build to stellar.expert again, one at a time with a pause in
+  # Submits every build of this run to stellar.expert again, one at a time with a pause in
   # between. Each contract's hash is the SHA-256 of the release asset its build
   # job published: release `<tag>_<package>_cli<cli version>`, file
   # `<package>_v<version>.wasm`. The request is the one the reusable workflow
@@ -165,12 +175,12 @@ jobs:
           # The CLI version the pinned reusable workflow builds with; it is
           # part of the release names.
           CLI_VERSION: 27.0.0
-          PACKAGES: fee-forwarder market-router session-policy referral wallet-factory guardian
+          PACKAGES: ${{ needs.check-version.outputs.packages }}
           PAUSE_SECONDS: 60
         run: |
           status=0
           first=1
-          for package in $PACKAGES; do
+          for package in $(echo "$PACKAGES" | tr ',' ' '); do
             if [ "$first" = 1 ]; then first=0; else sleep "$PAUSE_SECONDS"; fi
 
             release="${TAG}_${package}_cli${CLI_VERSION}"

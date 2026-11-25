@@ -295,8 +295,19 @@ fn test_install_spend_and_uninstall_publish_events() {
     );
 
     s.enforce(&s.transfer(s.market.into_val(e), SCALAR_7), &rule);
+    let transferred = SessionSpent {
+        smart_account: s.smart_account.clone(),
+        context_rule_id: 3,
+        amount: SCALAR_7,
+        total_spent: SCALAR_7,
+    };
+    assert_eq!(
+        e.events().all().filter_by_contract(policy),
+        [transferred.to_xdr(e, policy)]
+    );
+
     s.enforce(&s.approve(&s.forwarder, 2 * SCALAR_7), &rule);
-    let enforced = SessionSpent {
+    let approved = SessionSpent {
         smart_account: s.smart_account.clone(),
         context_rule_id: 3,
         amount: 2 * SCALAR_7,
@@ -304,11 +315,13 @@ fn test_install_spend_and_uninstall_publish_events() {
     };
     assert_eq!(
         e.events().all().filter_by_contract(policy),
-        [enforced.to_xdr(e, policy)]
+        [approved.to_xdr(e, policy)]
     );
 
     // A forward and a market call spend nothing and publish nothing.
     s.enforce(&s.forward("forward", "create_and_fill"), &rule);
+    assert_eq!(e.events().all().filter_by_contract(policy), []);
+    s.enforce(&s.call(&s.market, "create_order", vec![e]), &rule);
     assert_eq!(e.events().all().filter_by_contract(policy), []);
 
     s.client.uninstall(&rule, &s.smart_account);

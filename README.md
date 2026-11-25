@@ -72,7 +72,8 @@ a fixed build too, as the advisory states. The tests run against the 0.8.0 accou
 ## Releases
 
 Release WASMs are built by the [release workflow](.github/workflows/release.yml) when a version tag is
-pushed. It builds each contract with stellar.expert's
+pushed. It builds each contract whose crate version is the tag's, so a contract that did not change
+keeps its earlier release. It builds with stellar.expert's
 [soroban-build-workflow](https://github.com/stellar-expert/soroban-build-workflow) and Stellar CLI
 27.0.0. For each contract it publishes a GitHub release with the WASM, attests the build provenance,
 and submits the hash to [stellar.expert](https://stellar.expert) for source validation. A contract's

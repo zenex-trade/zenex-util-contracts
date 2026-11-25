@@ -5,8 +5,8 @@ OpenZeppelin smart-account policy for a trading session key.
 Constructor: `(forwarder, markets, token, fee_recipient)`.
 
 Install takes `limit`: the most the session key may spend under the rule, in the token's units.
-The wallet sets it, and it is stored per wallet and rule. The count never resets: a new limit is a
-new session rule.
+The wallet sets it, and it is stored per wallet and rule. The count never resets while the policy
+stays installed: a new limit is a new session rule.
 
 A context is allowed only when the session key signed and it is:
 
@@ -29,7 +29,8 @@ A context that would take the rule's spending over `limit` is refused. A market 
 token spends nothing.
 
 The count is gross: collateral a market pays back to the wallet does not lower it. An amount counts
-when the wallet authorizes it, so a transfer that then fails inside a forwarded call still counts.
+when the wallet authorizes it. A call that fails reverts its count with it, unless a contract in
+between catches the failure.
 
 The limit and the amount spent are the persistent entry `Spend(smart_account, context_rule_id)`,
 a `{limit, spent}`. There is no getter: read the entry from the ledger.
