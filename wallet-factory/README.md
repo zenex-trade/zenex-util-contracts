@@ -5,15 +5,15 @@ Deploys the current smart-account wasm and emits an event for each wallet.
 Constructor: `(owner, account_wasm_hash)`.
 
 ```
-deploy(signers, policies) -> Address
-predict_address(signers, policies) -> Address
+deploy(signer) -> Address
+predict_address(signer) -> Address
 set_wasm(account_wasm_hash)        // owner only
 ```
 
-The salt is the SHA-256 of `(signers, policies)` as XDR, so the address commits to the wallet's
-signers and anyone may deploy it. Deploying the same arguments twice fails. The address does not
-depend on the wasm: the same signers have one address under this factory, whatever wasm it
-deploys.
+`deploy` creates the wallet of one signer, with no policies. The wallet's owner adds signers and
+policies on the wallet afterwards. The salt is the SHA-256 of the signer as XDR, so a signer has
+one wallet under this factory and anyone may deploy it. Deploying the same signer twice fails. The
+address does not depend on the wasm.
 
 ## Owner
 
@@ -36,7 +36,7 @@ Each successful `deploy` emits one `wallet_deployed` event.
 | topics | `["wallet_deployed", wallet: Address]` |
 | data | `{account_wasm_hash: BytesN<32>}` |
 
-The event carries no signers, policies or caller. The wallet stores its signers and policies, and
+The event carries no signer or caller. The wallet stores its signers, and
 `deploy` requires no authorization, so the caller says nothing about the wallet's owner.
 
 `set_wasm` emits `wasm_set` with the data `{account_wasm_hash: BytesN<32>}`.

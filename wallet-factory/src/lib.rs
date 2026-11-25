@@ -7,8 +7,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractevent, contractimpl, symbol_short, unwrap::UnwrapOptimized, xdr::ToXdr,
-    Address, BytesN, ContractExecutable, Env, IntoVal, Map, Symbol, Val, Vec,
+    contract, contractevent, contractimpl, symbol_short, unwrap::UnwrapOptimized, vec, xdr::ToXdr,
+    Address, BytesN, ContractExecutable, Env, Map, Symbol, Val,
 };
 use stellar_access::ownable::{self, Ownable};
 use stellar_accounts::smart_account::Signer;
@@ -41,6 +41,10 @@ pub struct WasmSet {
     pub account_wasm_hash: BytesN<32>,
 }
 
+fn salt(e: &Env, signer: &Signer) -> BytesN<32> {
+    e.crypto().sha256(&signer.clone().to_xdr(e)).to_bytes()
+}
+
 #[contract]
 pub struct WalletFactoryContract;
 
@@ -64,26 +68,29 @@ impl WalletFactoryContract {
         WasmSet { account_wasm_hash }.publish(&e);
     }
 
-    /// Deploys a wallet with `(signers, policies)` as its constructor
-    /// arguments and returns its address. The salt is the SHA-256 of their
-    /// XDR, so the address commits to the wallet's signers and not to the
-    /// wasm: anyone may call this, and a second deploy of the same arguments
-    /// fails, whatever the current wasm.
+    /// Deploys the wallet of `signer` and returns its address. The wallet
+    /// starts with that one signer and no policies: its owner adds signers
+    /// and policies on the wallet. The salt is the SHA-256 of the signer's
+    /// XDR, so a signer has one wallet under this factory, whatever the
+    /// current wasm: anyone may call this, and a second deploy of the same
+    /// signer fails.
     ///
     /// # Events
     ///
     /// * topics - `["wallet_deployed", wallet: Address]`
     /// * data - `{account_wasm_hash: BytesN<32>}`
-    pub fn deploy(e: Env, signers: Vec<Signer>, policies: Map<Address, Val>) -> Address {
-        let args: Vec<Val> = (signers.clone(), policies.clone()).into_val(&e);
-        let salt = e.crypto().sha256(&args.to_xdr(&e)).to_bytes();
+    pub fn deploy(e: Env, signer: Signer) -> Address {
         let instance = e.storage().instance();
         instance.extend_ttl(TTL_THRESHOLD, EXTEND_AMOUNT);
         let wasm_hash: BytesN<32> = instance.get(&WASM_HASH).unwrap_optimized();
-        let wallet = e.deployer().with_current_contract(salt).deploy_contract(
-            ContractExecutable::Wasm(wasm_hash.clone()),
-            (signers, policies),
-        );
+        let policies: Map<Address, Val> = Map::new(&e);
+        let wallet = e
+            .deployer()
+            .with_current_contract(salt(&e, &signer))
+            .deploy_contract(
+                ContractExecutable::Wasm(wasm_hash.clone()),
+                (vec![&e, signer], policies),
+            );
         WalletDeployed {
             wallet: wallet.clone(),
             account_wasm_hash: wasm_hash,
@@ -92,12 +99,12 @@ impl WalletFactoryContract {
         wallet
     }
 
-    /// Returns the address `deploy` creates for these arguments, whether or
-    /// not the wallet exists yet.
-    pub fn predict_address(e: Env, signers: Vec<Signer>, policies: Map<Address, Val>) -> Address {
-        let args: Vec<Val> = (signers, policies).into_val(&e);
-        let salt = e.crypto().sha256(&args.to_xdr(&e)).to_bytes();
-        e.deployer().with_current_contract(salt).deployed_address()
+    /// Returns the address `deploy` creates for `signer`, whether or not the
+    /// wallet exists yet.
+    pub fn predict_address(e: Env, signer: Signer) -> Address {
+        e.deployer()
+            .with_current_contract(salt(&e, &signer))
+            .deployed_address()
     }
 }
 
