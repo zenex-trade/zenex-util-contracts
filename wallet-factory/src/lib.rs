@@ -20,12 +20,7 @@ const WASM_HASH: Symbol = symbol_short!("wasm");
 const EXTEND_AMOUNT: u32 = 30 * 17280; // ~30 days
 const TTL_THRESHOLD: u32 = EXTEND_AMOUNT - 17280; // refresh at ~29 days
 
-/// Emitted once for each wallet `deploy` creates.
-///
-/// Topics are `("wallet_deployed", wallet)` and the data is the map
-/// `{account_wasm_hash}`: the wasm the wallet was created with. The wallet is
-/// a topic so that one wallet can be looked up. The signers are not repeated
-/// here: the wallet stores them.
+/// Emitted for each wallet `deploy` creates, with the wasm it was created with.
 #[contractevent]
 #[derive(Clone)]
 pub struct WalletDeployed {
@@ -68,17 +63,8 @@ impl WalletFactoryContract {
         WasmSet { account_wasm_hash }.publish(&e);
     }
 
-    /// Deploys the wallet of `signer` and returns its address. The wallet
-    /// starts with that one signer and no policies: its owner adds signers
-    /// and policies on the wallet. The salt is the SHA-256 of the signer's
-    /// XDR, so a signer has one wallet under this factory, whatever the
-    /// current wasm: anyone may call this, and a second deploy of the same
-    /// signer fails.
-    ///
-    /// # Events
-    ///
-    /// * topics - `["wallet_deployed", wallet: Address]`
-    /// * data - `{account_wasm_hash: BytesN<32>}`
+    /// Deploys the wallet of `signer`, with that one signer and no policies,
+    /// and returns its address. A signer has one wallet under this factory.
     pub fn deploy(e: Env, signer: Signer) -> Address {
         let instance = e.storage().instance();
         instance.extend_ttl(TTL_THRESHOLD, EXTEND_AMOUNT);
@@ -99,8 +85,7 @@ impl WalletFactoryContract {
         wallet
     }
 
-    /// Returns the address `deploy` creates for `signer`, whether or not the
-    /// wallet exists yet.
+    /// Returns the address `deploy` creates for `signer`.
     pub fn predict_address(e: Env, signer: Signer) -> Address {
         e.deployer()
             .with_current_contract(salt(&e, &signer))
