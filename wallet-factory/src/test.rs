@@ -169,13 +169,17 @@ fn the_owner_sets_the_wasm_of_new_wallets() {
     as_caller!(&factory, &owner, "set_wasm", (next.clone(),).into_val(&e)).set_wasm(&next);
 
     let expected = WasmSet {
-        account_wasm_hash: next,
+        account_wasm_hash: next.clone(),
     }
     .to_xdr(&e, &factory.address);
     assert_eq!(
         e.events().all().filter_by_contract(&factory.address),
         [expected]
     );
+    let stored: BytesN<32> = e.as_contract(&factory.address, || {
+        e.storage().instance().get(&crate::WASM_HASH).unwrap()
+    });
+    assert_eq!(stored, next);
 }
 
 #[test]
