@@ -1788,6 +1788,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stellar-access"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e5dc69bd3a6d260a5fba6541f0260d0bed3fbfcbb615d2fb00dc95bda94ceaf"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "stellar-accounts"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1805,6 +1814,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "936d544d4b5fef0e5ddff78ca4d187b81a177a712377fa8ae3182d3c1f9fa6e5"
 dependencies = [
  "soroban-sdk",
+]
+
+[[package]]
+name = "stellar-macros"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3b4e7bcf89602f2dd864df1b4ee43bf7b3321847f1ca82e382548f34a43bdc5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1991,7 +2011,9 @@ name = "wallet-factory"
 version = "1.0.0"
 dependencies = [
  "soroban-sdk",
+ "stellar-access",
  "stellar-accounts",
+ "stellar-macros",
 ]
 
 [[package]]
