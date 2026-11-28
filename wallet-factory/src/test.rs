@@ -1,12 +1,12 @@
 extern crate std;
 
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke},
-    vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, Symbol,
+    testutils::Events as _, vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, Map, Symbol,
+    Val, Vec,
 };
 use stellar_accounts::smart_account::{ContextRule, Signer};
 
-use crate::{WalletDeployed, WalletFactoryContract, WalletFactoryContractClient, WasmSet};
+use crate::{WalletDeployed, WalletFactoryContract, WalletFactoryContractClient};
 
 /// The smart-account wasm (OpenZeppelin stellar-accounts v0.8.0) and the
 /// ed25519 verifier it canonicalizes external keys with. Their sources are
@@ -19,78 +19,49 @@ fn account_wasm_hash(e: &Env) -> BytesN<32> {
         .upload_contract_wasm(Bytes::from_slice(e, WALLET_WASM))
 }
 
-/// Another uploaded wasm, to stand for a later account build.
-fn other_wasm_hash(e: &Env) -> BytesN<32> {
-    e.deployer()
-        .upload_contract_wasm(Bytes::from_slice(e, VERIFIER_WASM))
-}
-
 fn setup(e: &Env) -> (WalletFactoryContractClient<'_>, Address) {
-    let (factory, verifier, _) = setup_owned(e);
-    (factory, verifier)
-}
-
-/// The factory, a verifier and the factory's owner. No call is authorized
-/// unless a test mocks it.
-fn setup_owned(e: &Env) -> (WalletFactoryContractClient<'_>, Address, Address) {
-    let owner = Address::generate(e);
-    let factory = e.register(WalletFactoryContract, (owner.clone(), account_wasm_hash(e)));
+    let factory = e.register(WalletFactoryContract, (account_wasm_hash(e),));
     let verifier = e.register(VERIFIER_WASM, ());
-    (
-        WalletFactoryContractClient::new(e, &factory),
-        verifier,
-        owner,
-    )
-}
-
-/// The factory client with one call of `$fn_name` authorized as `$who`.
-macro_rules! as_caller {
-    ($factory:expr, $who:expr, $fn_name:literal, $args:expr $(,)?) => {
-        $factory.mock_auths(&[MockAuth {
-            address: $who,
-            invoke: &MockAuthInvoke {
-                contract: &$factory.address,
-                fn_name: $fn_name,
-                args: $args,
-                sub_invokes: &[],
-            },
-        }])
-    };
+    (WalletFactoryContractClient::new(e, &factory), verifier)
 }
 
 /// An external signer like the backend's passkey: a verifier plus key data.
-fn signer(e: &Env, verifier: &Address, byte: u8) -> Signer {
-    Signer::External(verifier.clone(), Bytes::from_array(e, &[byte; 32]))
+fn signer(e: &Env, verifier: &Address, byte: u8) -> Vec<Signer> {
+    vec![
+        e,
+        Signer::External(verifier.clone(), Bytes::from_array(e, &[byte; 32])),
+    ]
 }
 
 #[test]
 fn deploy_creates_the_wallet_at_the_predicted_address() {
     let e = Env::default();
     let (factory, verifier) = setup(&e);
-    let signer = signer(&e, &verifier, 1);
+    let signers = signer(&e, &verifier, 1);
+    let policies = Map::<Address, Val>::new(&e);
 
-    let predicted = factory.predict_address(&signer);
-    let wallet = factory.deploy(&signer);
+    let predicted = factory.predict_address(&signers, &policies);
+    let wallet = factory.deploy(&signers, &policies);
     assert_eq!(wallet, predicted);
 
-    // The wallet's default rule (id 0) holds exactly that signer, and no policy.
+    // The wallet's default rule (id 0) holds exactly the passed signers.
     let rule: ContextRule = e.invoke_contract(
         &wallet,
         &Symbol::new(&e, "get_context_rule"),
         vec![&e, 0u32.into_val(&e)],
     );
-    assert_eq!(rule.signers, vec![&e, signer]);
-    assert!(rule.policies.is_empty());
+    assert_eq!(rule.signers, signers);
 }
 
 #[test]
 fn different_signers_give_a_different_address() {
     let e = Env::default();
     let (factory, verifier) = setup(&e);
+    let policies = Map::<Address, Val>::new(&e);
 
     assert_ne!(
-        factory.predict_address(&signer(&e, &verifier, 1)),
-        factory.predict_address(&signer(&e, &verifier, 2))
+        factory.predict_address(&signer(&e, &verifier, 1), &policies),
+        factory.predict_address(&signer(&e, &verifier, 2), &policies)
     );
 }
 
@@ -98,24 +69,26 @@ fn different_signers_give_a_different_address() {
 fn deploying_the_same_signers_twice_fails() {
     let e = Env::default();
     let (factory, verifier) = setup(&e);
-    let signer = signer(&e, &verifier, 1);
+    let signers = signer(&e, &verifier, 1);
+    let policies = Map::<Address, Val>::new(&e);
 
-    factory.deploy(&signer);
-    assert!(factory.try_deploy(&signer).is_err());
+    factory.deploy(&signers, &policies);
+    assert!(factory.try_deploy(&signers, &policies).is_err());
 }
 
 #[test]
 fn deploy_emits_one_event_with_the_wallet_and_the_wasm_hash() {
     let e = Env::default();
     let (factory, verifier) = setup(&e);
+    let policies = Map::<Address, Val>::new(&e);
     // Read before the deploy: `events().all()` holds the last invocation's
     // events only.
     let wasm_hash = account_wasm_hash(&e);
 
     for byte in [1, 2] {
-        let signer = signer(&e, &verifier, byte);
-        let predicted = factory.predict_address(&signer);
-        let wallet = factory.deploy(&signer);
+        let signers = signer(&e, &verifier, byte);
+        let predicted = factory.predict_address(&signers, &policies);
+        let wallet = factory.deploy(&signers, &policies);
         assert_eq!(wallet, predicted);
 
         let expected = WalletDeployed {
@@ -135,9 +108,10 @@ fn deploy_emits_one_event_with_the_wallet_and_the_wasm_hash() {
 fn a_failed_duplicate_deploy_emits_nothing() {
     let e = Env::default();
     let (factory, verifier) = setup(&e);
-    let signer = signer(&e, &verifier, 1);
+    let signers = signer(&e, &verifier, 1);
+    let policies = Map::<Address, Val>::new(&e);
 
-    factory.deploy(&signer);
+    factory.deploy(&signers, &policies);
     assert_eq!(
         e.events()
             .all()
@@ -147,7 +121,7 @@ fn a_failed_duplicate_deploy_emits_nothing() {
         1
     );
 
-    assert!(factory.try_deploy(&signer).is_err());
+    assert!(factory.try_deploy(&signers, &policies).is_err());
     assert!(e.events().all().events().is_empty());
 }
 
@@ -156,69 +130,6 @@ fn predict_address_emits_nothing() {
     let e = Env::default();
     let (factory, verifier) = setup(&e);
 
-    factory.predict_address(&signer(&e, &verifier, 1));
+    factory.predict_address(&signer(&e, &verifier, 1), &Map::new(&e));
     assert!(e.events().all().events().is_empty());
-}
-
-#[test]
-fn the_owner_sets_the_wasm_of_new_wallets() {
-    let e = Env::default();
-    let (factory, _, owner) = setup_owned(&e);
-    let next = other_wasm_hash(&e);
-
-    as_caller!(&factory, &owner, "set_wasm", (next.clone(),).into_val(&e)).set_wasm(&next);
-
-    let expected = WasmSet {
-        account_wasm_hash: next.clone(),
-    }
-    .to_xdr(&e, &factory.address);
-    assert_eq!(
-        e.events().all().filter_by_contract(&factory.address),
-        [expected]
-    );
-    let stored: BytesN<32> = e.as_contract(&factory.address, || {
-        e.storage().instance().get(&crate::WASM_HASH).unwrap()
-    });
-    assert_eq!(stored, next);
-}
-
-#[test]
-fn only_the_owner_sets_the_wasm() {
-    let e = Env::default();
-    let (factory, _, owner) = setup_owned(&e);
-    let stranger = Address::generate(&e);
-    let next = other_wasm_hash(&e);
-
-    assert!(as_caller!(
-        &factory,
-        &stranger,
-        "set_wasm",
-        (next.clone(),).into_val(&e)
-    )
-    .try_set_wasm(&next)
-    .is_err());
-
-    // After the owner renounces, nobody can.
-    as_caller!(&factory, &owner, "renounce_ownership", ().into_val(&e)).renounce_ownership();
-    assert!(
-        as_caller!(&factory, &owner, "set_wasm", (next.clone(),).into_val(&e))
-            .try_set_wasm(&next)
-            .is_err()
-    );
-}
-
-#[test]
-fn a_wallet_address_does_not_depend_on_the_wasm() {
-    let e = Env::default();
-    let (factory, verifier, owner) = setup_owned(&e);
-    let signer = signer(&e, &verifier, 1);
-    let before = factory.predict_address(&signer);
-    assert_eq!(factory.deploy(&signer), before);
-
-    let next = other_wasm_hash(&e);
-    as_caller!(&factory, &owner, "set_wasm", (next.clone(),).into_val(&e)).set_wasm(&next);
-
-    assert_eq!(factory.predict_address(&signer), before);
-    // The same signers cannot get a second wallet under the new wasm.
-    assert!(factory.try_deploy(&signer).is_err());
 }
